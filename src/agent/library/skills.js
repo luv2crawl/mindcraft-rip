@@ -3,6 +3,13 @@ import * as world from "./world.js";
 import pf from 'mineflayer-pathfinder';
 import Vec3 from 'vec3';
 import settings from "../../../settings.js";
+import {
+    getOreInfo,
+    getOreBlockNames,
+    getBestY,
+    botHasRequiredPickaxe,
+    getKnownOres,
+} from './ore_data.js';
 
 const blockPlaceDelay = settings.block_place_delay == null ? 0 : settings.block_place_delay;
 const useDelay = blockPlaceDelay > 0;
@@ -31,6 +38,32 @@ async function equipHighestAttack(bot) {
     let weapon = weapons[0];
     if (weapon)
         await bot.equip(weapon, 'hand');
+}
+
+export async function withSuspendedModes(bot, modeNames, fn) {
+    /**
+     * Pause the listed modes for the duration of fn, then unpause on completion or error.
+     * Modes that are not registered are silently skipped so callers can pass a uniform list.
+     * @param {MinecraftBot} bot
+     * @param {string[]} modeNames - mode names to pause (e.g. ['item_collecting', 'hunting'])
+     * @param {() => Promise<any>} fn - async function to run while modes are suspended
+     */
+    const paused = [];
+    for (const name of modeNames) {
+        try {
+            if (bot.modes.exists(name)) {
+                bot.modes.pause(name);
+                paused.push(name);
+            }
+        } catch (e) { /* mode registry not ready or mode missing — ignore */ }
+    }
+    try {
+        return await fn();
+    } finally {
+        for (const name of paused) {
+            try { bot.modes.unpause(name); } catch (e) { /* swallow */ }
+        }
+    }
 }
 
 export async function craftRecipe(bot, itemName, num=1) {
@@ -73,7 +106,7 @@ export async function craftRecipe(bot, itemName, num=1) {
                 }
             }
             else {
-                log(bot, `Crafting ${itemName} requires a crafting table.`)
+                log(bot, `Crafting ${itemName} requires a crafting table.`);
                 return false;
             }
         }
@@ -171,7 +204,7 @@ export async function smeltItem(bot, itemName, num=1) {
         }
     }
     if (!furnaceBlock){
-        log(bot, `There is no furnace nearby and you have no furnace.`)
+        log(bot, `There is no furnace nearby and you have no furnace.`);
         return false;
     }
     if (bot.entity.position.distanceTo(furnaceBlock.position) > 4) {
@@ -222,7 +255,7 @@ export async function smeltItem(bot, itemName, num=1) {
         }
         await furnace.putFuel(fuel.type, null, put_fuel);
         log(bot, `Added ${put_fuel} ${mc.getItemName(fuel.type)} to furnace fuel.`);
-        console.log(`Added ${put_fuel} ${mc.getItemName(fuel.type)} to furnace fuel.`)
+        console.log(`Added ${put_fuel} ${mc.getItemName(fuel.type)} to furnace fuel.`);
     }
     // put the items in the furnace
     await furnace.putInput(mc.getItemId(itemName), null, num);
@@ -291,7 +324,7 @@ export async function clearNearestFurnace(bot) {
 
     console.log('clearing furnace...');
     const furnace = await bot.openFurnace(furnaceBlock);
-    console.log('opened furnace...')
+    console.log('opened furnace...');
     // take the items out of the furnace
     let smelted_item, intput_item, fuel_item;
     if (furnace.outputItem())
@@ -300,7 +333,7 @@ export async function clearNearestFurnace(bot) {
         intput_item = await furnace.takeInput();
     if (furnace.fuelItem())
         fuel_item = await furnace.takeFuel();
-    console.log(smelted_item, intput_item, fuel_item)
+    console.log(smelted_item, intput_item, fuel_item);
     let smelted_name = smelted_item ? `${smelted_item.count} ${smelted_item.name}` : `0 smelted items`;
     let input_name = intput_item ? `${intput_item.count} ${intput_item.name}` : `0 input items`;
     let fuel_name = fuel_item ? `${fuel_item.count} ${fuel_item.name}` : `0 fuel items`;
@@ -342,14 +375,14 @@ export async function attackEntity(bot, entity, kill=true) {
      **/
 
     let pos = entity.position;
-    await equipHighestAttack(bot)
+    await equipHighestAttack(bot);
 
     if (!kill) {
         if (bot.entity.position.distanceTo(pos) > 5) {
-            console.log('moving to mob...')
+            console.log('moving to mob...');
             await goToPosition(bot, pos.x, pos.y, pos.z);
         }
-        console.log('attacking mob...')
+        console.log('attacking mob...');
         await bot.attack(entity);
     }
     else {
@@ -486,7 +519,7 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
             }
             await bot.equip(bucket, 'hand');
         }
-        const itemId = bot.heldItem ? bot.heldItem.type : null
+        const itemId = bot.heldItem ? bot.heldItem.type : null;
         if (!block.canHarvest(itemId)) {
             log(bot, `Don't have right tools to harvest ${blockType}.`);
             return false;
@@ -591,7 +624,7 @@ export async function breakBlockAt(bot, x, y, z) {
         }
         if (bot.game.gameMode !== 'creative') {
             await bot.tool.equipForBlock(block);
-            const itemId = bot.heldItem ? bot.heldItem.type : null
+            const itemId = bot.heldItem ? bot.heldItem.type : null;
             if (!block.canHarvest(itemId)) {
                 log(bot, `Don't have right tools to break ${block.name}.`);
                 return false;
@@ -723,7 +756,7 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         'south': Vec3(0, 0, 1),
         'east': Vec3(1, 0, 0),
         'west': Vec3(-1, 0, 0),
-    }
+    };
     let dirs = [];
     if (placeOn === 'side') {
         dirs.push(dir_map['north'], dir_map['south'], dir_map['east'], dir_map['west']);
@@ -1010,7 +1043,7 @@ export async function giveToPlayer(bot, itemType, username, num=1) {
         log(bot, `You cannot give items to yourself.`);
         return false;
     }
-    let player = bot.players[username].entity
+    let player = bot.players[username].entity;
     if (!player) {
         log(bot, `Could not find ${username}.`);
         return false;
@@ -1067,11 +1100,37 @@ export async function giveToPlayer(bot, itemType, username, num=1) {
     return false;
 }
 
-export async function goToGoal(bot, goal) {
+export function _goalApproxDistance(bot, goal) {
+    // Best-effort read of a goal's target XYZ. GoalNear/GoalBlock expose .x/.y/.z directly.
+    // For other goal types (GoalFollow, GoalInvert, etc.) we don't try to introspect — return null
+    // and the caller will use the max timeout, which is the safe choice.
+    if (goal == null) return null;
+    if (typeof goal.x === 'number' && typeof goal.y === 'number' && typeof goal.z === 'number') {
+        return bot.entity.position.distanceTo(new Vec3(goal.x, goal.y, goal.z));
+    }
+    return null;
+}
+
+export function _computePathfindTimeout(bot, goal) {
+    const base = settings.pathfind_timeout_base_ms ?? 1000;
+    const perBlock = settings.pathfind_timeout_per_block_ms ?? 30;
+    const max = settings.pathfind_timeout_max_ms ?? 15000;
+    const dist = _goalApproxDistance(bot, goal);
+    if (dist == null) return max;
+    return Math.max(base, Math.min(max, base + perBlock * dist));
+}
+
+export async function goToGoal(bot, goal, options = {}) {
     /**
      * Navigate to the given goal. Use doors and attempt minimally destructive movements.
      * @param {MinecraftBot} bot, reference to the minecraft bot.
      * @param {pf.goals.Goal} goal, the goal to navigate to.
+     * @param {Object} [options]
+     * @param {boolean} [options.forceDestructive=false] - skip non-destructive plan attempt.
+     * @param {boolean} [options.failOnNoPath=false] - if both plan attempts fail, return false
+     *   instead of falling through to "attempt anyway." Used by chunked nav so it can react.
+     * @returns {Promise<boolean>} true if pathfinder.goto resolved (reached the goal), false on
+     *   plan failure with failOnNoPath, or throws on goto error.
      **/
 
     const nonDestructiveMovements = new pf.Movements(bot);
@@ -1084,18 +1143,30 @@ export async function goToGoal(bot, goal) {
 
     const destructiveMovements = new pf.Movements(bot);
 
-    let final_movements = destructiveMovements;
+    let final_movements = null;
 
-    const pathfind_timeout = 1000;
-    if (await bot.pathfinder.getPathTo(nonDestructiveMovements, goal, pathfind_timeout).status === 'success') {
-        final_movements = nonDestructiveMovements;
-        log(bot, `Found non-destructive path.`);
+    const pathfind_timeout = _computePathfindTimeout(bot, goal);
+    if (!options.forceDestructive) {
+        const ndPath = await bot.pathfinder.getPathTo(nonDestructiveMovements, goal, pathfind_timeout);
+        if (ndPath.status === 'success') {
+            final_movements = nonDestructiveMovements;
+            log(bot, `Found non-destructive path.`);
+        }
     }
-    else if (await bot.pathfinder.getPathTo(destructiveMovements, goal, pathfind_timeout).status === 'success') {
-        log(bot, `Found destructive path.`);
+    if (final_movements == null) {
+        const dPath = await bot.pathfinder.getPathTo(destructiveMovements, goal, pathfind_timeout);
+        if (dPath.status === 'success') {
+            final_movements = destructiveMovements;
+            log(bot, `Found destructive path.`);
+        }
     }
-    else {
+    if (final_movements == null) {
+        if (options.failOnNoPath) {
+            log(bot, `Path not found within ${pathfind_timeout}ms.`);
+            return false;
+        }
         log(bot, `Path not found, but attempting to navigate anyway using destructive movements.`);
+        final_movements = destructiveMovements;
     }
 
     const doorCheckInterval = startDoorInterval(bot);
@@ -1143,7 +1214,7 @@ function startDoorInterval(bot) {
                 bot.entity.position.offset(0, 0, -1), 
                 bot.entity.position.offset(1, 0, 0),
                 bot.entity.position.offset(-1, 0, 0),
-            ]
+            ];
             let elevated_positions = positions.map(position => position.offset(0, 1, 0));
             positions.push(...elevated_positions);
             positions.push(bot.entity.position.offset(0, 2, 0)); // above head
@@ -1234,6 +1305,109 @@ export async function goToPosition(bot, x, y, z, min_distance=2) {
     }
 }
 
+export async function goToPositionChunked(bot, x, y, z, min_distance=2) {
+    /**
+     * Navigate to the given position, breaking long journeys into chunks so the pathfinder
+     * never has to plan more than ~nav_chunk_distance blocks at once. Pauses item_collecting,
+     * hunting, and torch_placing for the duration so the bot doesn't get sidetracked.
+     * Falls back to a direct goToPosition for short distances.
+     * @param {MinecraftBot} bot
+     * @param {number} x
+     * @param {number} y
+     * @param {number} z
+     * @param {number} min_distance - closeness for the final goal. Defaults to 2.
+     * @returns {Promise<boolean>}
+     */
+    if (x == null || y == null || z == null) {
+        log(bot, `Missing coordinates, given x:${x} y:${y} z:${z}`);
+        return false;
+    }
+    if (bot.modes.isOn('cheat')) {
+        bot.chat('/tp @s ' + x + ' ' + y + ' ' + z);
+        log(bot, `Teleported to ${x}, ${y}, ${z}.`);
+        return true;
+    }
+
+    const target = new Vec3(x, y, z);
+    const threshold = settings.nav_chunk_threshold ?? 100;
+    const chunkDist = settings.nav_chunk_distance ?? 80;
+    const retryLimit = settings.nav_chunk_retry_limit ?? 2;
+
+    const totalDistance = bot.entity.position.distanceTo(target);
+    if (totalDistance <= threshold) {
+        return await goToPosition(bot, x, y, z, min_distance);
+    }
+
+    // Pure-vertical targets can't be chunked along the XZ vector — every "intermediate"
+    // would land at the bot's current position. Fall through to a direct pathfind, but
+    // still suspend distracting modes for the duration.
+    const dxAbs = Math.abs(target.x - bot.entity.position.x);
+    const dzAbs = Math.abs(target.z - bot.entity.position.z);
+    if (dxAbs < 1 && dzAbs < 1) {
+        log(bot, `Pure-vertical nav to Y=${Math.round(y)}; using direct pathfind.`);
+        return await withSuspendedModes(bot, ['item_collecting', 'hunting', 'torch_placing'], async () => {
+            return await goToPosition(bot, x, y, z, min_distance);
+        });
+    }
+
+    log(bot, `Long-distance nav to (${Math.round(x)}, ${Math.round(y)}, ${Math.round(z)}), ~${Math.round(totalDistance)} blocks away. Chunking.`);
+
+    return await withSuspendedModes(bot, ['item_collecting', 'hunting', 'torch_placing'], async () => {
+        const MAX_CHUNKS = 50;
+        let chunksDone = 0;
+        while (!bot.interrupt_code && chunksDone < MAX_CHUNKS) {
+            const here = bot.entity.position;
+            const remaining = here.distanceTo(target);
+            if (remaining <= threshold) {
+                log(bot, `Within ${threshold} blocks of target, finishing journey.`);
+                return await goToPosition(bot, x, y, z, min_distance);
+            }
+
+            // Pick a waypoint chunkDist blocks toward target along the XZ vector;
+            // keep the current Y so the pathfinder finds whatever standable elevation is nearby.
+            const dx = target.x - here.x;
+            const dz = target.z - here.z;
+            const planar = Math.sqrt(dx * dx + dz * dz);
+            const scale = planar > 0 ? Math.min(chunkDist, planar) / planar : 0;
+            const wp = new Vec3(
+                Math.round(here.x + dx * scale),
+                Math.round(here.y),
+                Math.round(here.z + dz * scale)
+            );
+            log(bot, `Chunk waypoint (${wp.x}, ${wp.y}, ${wp.z}); ${Math.round(remaining)} blocks remaining.`);
+
+            const goal = new pf.goals.GoalNear(wp.x, wp.y, wp.z, 5);
+            let success = false;
+            for (let attempt = 0; attempt <= retryLimit; attempt++) {
+                if (bot.interrupt_code) break;
+                const isLastAttempt = attempt === retryLimit;
+                const opts = {
+                    forceDestructive: attempt > 0,
+                    failOnNoPath: !isLastAttempt,
+                };
+                try {
+                    const res = await goToGoal(bot, goal, opts);
+                    if (res) { success = true; break; }
+                    log(bot, `Chunk plan attempt ${attempt + 1}/${retryLimit + 1} found no path; retrying.`);
+                } catch (err) {
+                    log(bot, `Chunk attempt ${attempt + 1}/${retryLimit + 1} error: ${err.message}.`);
+                }
+            }
+            if (!success) {
+                log(bot, `Could not reach chunk waypoint after ${retryLimit + 1} attempts. Aborting journey.`);
+                return false;
+            }
+            chunksDone++;
+        }
+        if (bot.interrupt_code) {
+            log(bot, `Long-distance navigation interrupted.`);
+            return false;
+        }
+        log(bot, `Long-distance navigation safety limit (${MAX_CHUNKS} chunks) reached.`);
+        return false;
+    });
+}
+
 export async function goToNearestBlock(bot, blockType,  min_distance=2, range=64) {
     /**
      * Navigate to the nearest block of the given type.
@@ -1313,7 +1487,7 @@ export async function goToPlayer(bot, username, distance=3) {
 
     bot.modes.pause('self_defense');
     bot.modes.pause('cowardice');
-    let player = bot.players[username].entity
+    let player = bot.players[username].entity;
     if (!player) {
         log(bot, `Could not find ${username}.`);
         return false;
@@ -1337,7 +1511,7 @@ export async function followPlayer(bot, username, distance=4) {
      * @example
      * await skills.followPlayer(bot, "player");
      **/
-    let player = bot.players[username].entity
+    let player = bot.players[username].entity;
     if (!player)
         return false;
 
@@ -1596,8 +1770,8 @@ export async function tillAndSow(bot, x, y, z, seedType=null) {
                 seedType = seedType.replace(remove, '');
             }
         }
-        placeBlock(bot, 'farmland', x, y, z);
-        placeBlock(bot, seedType, x, y+1, z);
+        await placeBlock(bot, 'farmland', x, y, z);
+        await placeBlock(bot, seedType, x, y+1, z);
         return true;
     }
 
@@ -1926,7 +2100,7 @@ export async function digDown(bot, distance = 10) {
         // Check for lava, water
         if (targetBlock.name === 'lava' || targetBlock.name === 'water' || 
             belowBlock.name === 'lava' || belowBlock.name === 'water') {
-            log(bot, `Dug down ${i-1} blocks, but reached ${belowBlock ? belowBlock.name : '(lava/water)'}`)
+            log(bot, `Dug down ${i-1} blocks, but reached ${belowBlock ? belowBlock.name : '(lava/water)'}`);
             return false;
         }
 
@@ -1973,7 +2147,7 @@ export async function goToSurface(bot) {
             continue;
         }
         await goToPosition(bot, block.position.x, block.position.y + 1, block.position.z, 0); // this will probably work most of the time but a custom mining and towering up implementation could be added if needed
-        log(bot, `Going to the surface at y=${y+1}.`);``
+        log(bot, `Going to the surface at y=${y+1}.`);``;
         return true;
     }
     return false;
@@ -2061,7 +2235,7 @@ export async function useToolOn(bot, toolName, targetName) {
         return blockInView && 
             !blockInView.position.equals(block.position) && 
             blockInView.position.distanceTo(headPos) < block.position.distanceTo(headPos);
-    }
+    };
     const blockInView = bot.blockAtCursor(5);
     if (viewBlocked()) {
         log(bot, `Block ${blockInView.name} is in the way, moving closer...`);
@@ -2091,3 +2265,414 @@ export async function useToolOn(bot, toolName, targetName) {
     log(bot, `Used ${toolName} on ${block.name}.`);
     return true;
  }
+
+// ---------------------------------------------------------------------------
+// Mining: branch-mine a corridor toward a target ore, return to a designated
+// chest when inventory fills, resume until the requested count is collected.
+// ---------------------------------------------------------------------------
+
+const SPOIL_BLOCKS = [
+    'cobblestone', 'cobbled_deepslate', 'granite', 'diorite', 'andesite',
+    'tuff', 'dirt', 'gravel', 'netherrack',
+];
+
+const ORE_DROPS = {
+    coal: ['coal'],
+    copper: ['raw_copper'],
+    iron: ['raw_iron'],
+    lapis_lazuli: ['lapis_lazuli'],
+    gold: ['raw_gold'],
+    redstone: ['redstone'],
+    diamond: ['diamond'],
+    emerald: ['emerald'],
+    nether_quartz: ['quartz'],
+    nether_gold: ['gold_nugget'],
+    ancient_debris: ['ancient_debris'],
+};
+
+export function _directionToVec(direction) {
+    switch ((direction || 'south').toLowerCase()) {
+        case 'north': return { x: 0, z: -1, label: 'north' };
+        case 'south': return { x: 0, z: 1,  label: 'south' };
+        case 'east':  return { x: 1, z: 0,  label: 'east' };
+        case 'west':  return { x: -1, z: 0, label: 'west' };
+        default:      return { x: 0, z: 1,  label: 'south' };
+    }
+}
+
+async function _mineExposedOres(bot, ax, ay, az, oreNames) {
+    // Scan adjacent walls (foot and head levels), floor, and ceiling for matching ore.
+    const scan = [
+        [ax + 1, ay,     az    ], [ax - 1, ay,     az    ],
+        [ax,     ay,     az + 1], [ax,     ay,     az - 1],
+        [ax + 1, ay + 1, az    ], [ax - 1, ay + 1, az    ],
+        [ax,     ay + 1, az + 1], [ax,     ay + 1, az - 1],
+        [ax,     ay - 1, az    ], [ax,     ay + 2, az    ],
+    ];
+    let collected = 0;
+    for (const [sx, sy, sz] of scan) {
+        if (bot.interrupt_code) break;
+        const block = bot.blockAt(new Vec3(sx, sy, sz));
+        if (block && oreNames.includes(block.name)) {
+            const ok = await breakBlockAt(bot, sx, sy, sz);
+            if (ok) {
+                collected++;
+                await new Promise(r => setTimeout(r, 200));
+                await pickupNearbyItems(bot);
+            }
+        }
+    }
+    return collected;
+}
+
+export function _isPassableForCorridor(block) {
+    return !block || block.name === 'air';
+}
+
+export function _isHazardousFluid(block) {
+    if (!block) return false;
+    return block.name === 'lava' || block.name === 'water' || block.name === 'flowing_lava' || block.name === 'flowing_water';
+}
+
+export async function branchMineStep(bot, dirVec, oreName) {
+    /**
+     * Advance one step along a 2-tall corridor in dirVec, then mine any exposed target ore.
+     * Treats already-air blocks as success (so cliff/cave edges don't abort the run).
+     * Bails out if the cell contains lava/water — we don't want to walk in.
+     * @returns count of target-ore blocks mined this step, or null if interrupted/blocked.
+     */
+    const here = bot.entity.position;
+    const ax = Math.floor(here.x) + dirVec.x;
+    const az = Math.floor(here.z) + dirVec.z;
+    const ay = Math.floor(here.y);
+
+    // Early hazard check: don't break into lava/water and walk in.
+    const headBefore = bot.blockAt(new Vec3(ax, ay + 1, az));
+    const footBefore = bot.blockAt(new Vec3(ax, ay, az));
+    if (_isHazardousFluid(headBefore) || _isHazardousFluid(footBefore)) {
+        log(bot, `Corridor cell at (${ax}, ${ay}, ${az}) contains ${_isHazardousFluid(headBefore) ? headBefore.name : footBefore.name}; aborting step.`);
+        return null;
+    }
+
+    await breakBlockAt(bot, ax, ay + 1, az);
+    if (bot.interrupt_code) return null;
+    await breakBlockAt(bot, ax, ay, az);
+    if (bot.interrupt_code) return null;
+
+    // Re-read post-break: only treat as failure if blocks are still solid (truly unbreakable).
+    const headAfter = bot.blockAt(new Vec3(ax, ay + 1, az));
+    const footAfter = bot.blockAt(new Vec3(ax, ay, az));
+    if (!_isPassableForCorridor(headAfter) || !_isPassableForCorridor(footAfter)) {
+        log(bot, `Corridor blocked at (${ax}, ${ay}, ${az}): head=${headAfter?.name}, foot=${footAfter?.name}. Wrong pickaxe tier or unbreakable.`);
+        return null;
+    }
+
+    // Step into the cleared cell. Tight closeness so we actually advance.
+    const stepOk = await goToPosition(bot, ax + 0.5, ay, az + 0.5, 1);
+    if (bot.interrupt_code) return null;
+    if (!stepOk) {
+        log(bot, `Could not step forward into (${ax}, ${ay}, ${az}).`);
+        return null;
+    }
+    await pickupNearbyItems(bot);
+
+    const oreNames = getOreBlockNames(oreName);
+    const newHere = bot.entity.position;
+    return await _mineExposedOres(
+        bot,
+        Math.floor(newHere.x),
+        Math.floor(newHere.y),
+        Math.floor(newHere.z),
+        oreNames,
+    );
+}
+
+export async function placeTorchOnWall(bot, dirVec) {
+    /**
+     * Place a torch on a side wall at head level, behind the corridor head, so the
+     * bot doesn't have to backtrack and the torch isn't in the way of the next step.
+     */
+    if (!bot.inventory.findInventoryItem('torch')) return false;
+    const here = bot.entity.position;
+    const tx = Math.floor(here.x) - dirVec.x;
+    const ty = Math.floor(here.y) + 1;
+    const tz = Math.floor(here.z) - dirVec.z;
+    try {
+        return await placeBlock(bot, 'torch', tx, ty, tz, 'side');
+    } catch (e) {
+        return false;
+    }
+}
+
+async function _staircaseStepDown(bot, dirVec, oreNamesToScan) {
+    // Mine a single staircase step heading dirVec and dropping 1 in Y.
+    // Bot is at (cx, cy, cz). New foot will be at (cx + dx, cy - 1, cz + dz).
+    const here = bot.entity.position;
+    const cy = Math.floor(here.y);
+    const nx = Math.floor(here.x) + dirVec.x;
+    const nz = Math.floor(here.z) + dirVec.z;
+    const ny = cy - 1; // new foot Y
+
+    // The two cells we need passable: head at (nx, ny+1=cy, nz), foot at (nx, ny, nz).
+    const headBefore = bot.blockAt(new Vec3(nx, ny + 1, nz));
+    const footBefore = bot.blockAt(new Vec3(nx, ny, nz));
+    if (_isHazardousFluid(headBefore) || _isHazardousFluid(footBefore)) {
+        log(bot, `Staircase step at (${nx}, ${ny}, ${nz}) hit ${_isHazardousFluid(headBefore) ? headBefore.name : footBefore.name}; aborting.`);
+        return false;
+    }
+    // Floor block (what the new foot stands on) at (nx, ny - 1, nz). If it's air or fluid,
+    // we'd fall further than intended — bail.
+    const floorBlock = bot.blockAt(new Vec3(nx, ny - 1, nz));
+    if (!floorBlock || floorBlock.name === 'air' || _isHazardousFluid(floorBlock)) {
+        log(bot, `Staircase floor at (${nx}, ${ny - 1}, ${nz}) is ${floorBlock?.name || 'unloaded'}; aborting to avoid falling.`);
+        return false;
+    }
+
+    await breakBlockAt(bot, nx, ny + 1, nz);
+    if (bot.interrupt_code) return false;
+    await breakBlockAt(bot, nx, ny, nz);
+    if (bot.interrupt_code) return false;
+
+    const headAfter = bot.blockAt(new Vec3(nx, ny + 1, nz));
+    const footAfter = bot.blockAt(new Vec3(nx, ny, nz));
+    if (!_isPassableForCorridor(headAfter) || !_isPassableForCorridor(footAfter)) {
+        log(bot, `Staircase blocked at (${nx}, ${ny}, ${nz}): head=${headAfter?.name}, foot=${footAfter?.name}. Wrong pickaxe tier or unbreakable.`);
+        return false;
+    }
+
+    const stepOk = await goToPosition(bot, nx + 0.5, ny, nz + 0.5, 1);
+    if (bot.interrupt_code) return false;
+    if (!stepOk) {
+        log(bot, `Could not step into staircase cell (${nx}, ${ny}, ${nz}).`);
+        return false;
+    }
+    await pickupNearbyItems(bot);
+
+    if (oreNamesToScan && oreNamesToScan.length > 0) {
+        const newHere = bot.entity.position;
+        await _mineExposedOres(
+            bot,
+            Math.floor(newHere.x),
+            Math.floor(newHere.y),
+            Math.floor(newHere.z),
+            oreNamesToScan,
+        );
+    }
+    return true;
+}
+
+export async function digStaircaseTo(bot, targetY, dirVec, oreNamesToScan = null) {
+    /**
+     * Mine a 45-degree descending staircase from the bot's current Y down to targetY.
+     * Each step mines a 2-tall passage one block forward + one block down. Optionally
+     * scans for the listed ore block names at each step. Descent only — for ascent use
+     * goToSurface or pathfinder which can tower-up. Returns true if reached targetY.
+     * @param {MinecraftBot} bot
+     * @param {number} targetY
+     * @param {{x:number,z:number,label:string}} dirVec
+     * @param {string[]|null} [oreNamesToScan]
+     * @returns {Promise<boolean>}
+     */
+    const startY = Math.floor(bot.entity.position.y);
+    if (targetY >= startY) {
+        log(bot, `digStaircaseTo: target Y=${targetY} not below current Y=${startY}; nothing to do.`);
+        return true;
+    }
+    const totalSteps = startY - targetY;
+    log(bot, `Building descending staircase ${dirVec.label}: ${totalSteps} steps from Y=${startY} to Y=${targetY}.`);
+
+    const SAFETY_CAP = totalSteps + 50;
+    let stepsTaken = 0;
+    while (!bot.interrupt_code && stepsTaken < SAFETY_CAP) {
+        const currentY = Math.floor(bot.entity.position.y);
+        if (currentY <= targetY) {
+            log(bot, `Staircase reached Y=${currentY}.`);
+            return true;
+        }
+        const ok = await _staircaseStepDown(bot, dirVec, oreNamesToScan);
+        if (!ok) {
+            log(bot, `Staircase aborted at Y=${currentY} after ${stepsTaken} steps.`);
+            return false;
+        }
+        stepsTaken++;
+    }
+    if (bot.interrupt_code) {
+        log(bot, `Staircase interrupted at Y=${Math.floor(bot.entity.position.y)}.`);
+        return false;
+    }
+    log(bot, `Staircase safety cap (${SAFETY_CAP}) reached without arriving at Y=${targetY}.`);
+    return false;
+}
+
+export async function returnToChestAndDeposit(bot, chestPos, oreName, miningEntry) {
+    /**
+     * Travel to the home chest, deposit the target ore drops + spoil blocks, then return
+     * to the mining entry point so the caller can resume the corridor.
+     */
+    log(bot, `Inventory near full, returning to home chest.`);
+    const ok = await goToPositionChunked(bot, chestPos.x, chestPos.y, chestPos.z, 2);
+    if (!ok) {
+        log(bot, `Could not reach home chest at (${chestPos.x}, ${chestPos.y}, ${chestPos.z}).`);
+        return false;
+    }
+    const oreInfo = getOreInfo(oreName);
+    const dropList = ((oreInfo && ORE_DROPS[oreInfo.key]) || []).concat(SPOIL_BLOCKS);
+    for (const itemName of dropList) {
+        if (bot.interrupt_code) break;
+        if (bot.inventory.findInventoryItem(itemName)) {
+            await putInChest(bot, itemName, -1);
+        }
+    }
+    if (bot.interrupt_code) return false;
+    log(bot, `Deposit done; returning to mining entry.`);
+    return await goToPositionChunked(bot, miningEntry.x, miningEntry.y, miningEntry.z, 2);
+}
+
+export async function mineOreAt(bot, oreName, num, options = {}) {
+    /**
+     * Orchestrate a mining run: validate pickaxe, save entry, descend to working Y via
+     * a 45-degree staircase (no straight-down digging), branch-mine with torches,
+     * return-to-chest cycles when full, stop at cumulative target count.
+     * @param {MinecraftBot} bot
+     * @param {string} oreName - "iron", "iron_ore", "Iron", etc.
+     * @param {number} num - cumulative count of target ore drops to mine this run.
+     * @param {Object} [options]
+     * @param {string} [options.direction='south'] - 'north'|'south'|'east'|'west'.
+     * @param {Object} [options.memoryBank] - the agent's MemoryBank for home_chest/mining_entry.
+     */
+    const direction = _directionToVec(options.direction || 'south');
+    const oreInfo = getOreInfo(oreName);
+    if (!oreInfo) {
+        log(bot, `Unknown ore: ${oreName}. Known: ${getKnownOres().join(', ')}.`);
+        return false;
+    }
+
+    const pickCheck = botHasRequiredPickaxe(bot, oreName);
+    if (!pickCheck.ok) {
+        log(bot, `Need a ${pickCheck.needs} pickaxe to mine ${oreInfo.display}; you have ${pickCheck.has || 'none'}.`);
+        return false;
+    }
+    log(bot, `mineOre: pickaxe check ok (have ${pickCheck.has}, needs ${pickCheck.needs}).`);
+
+    // Determine deposit chest.
+    let chestPos = null;
+    const memBank = options.memoryBank;
+    if (memBank) {
+        const recalled = memBank.recallPlace('home_chest');
+        if (recalled) chestPos = { x: recalled[0], y: recalled[1], z: recalled[2] };
+    }
+    if (!chestPos) {
+        const nearby = world.getNearestBlock(bot, 'chest', 32);
+        if (!nearby) {
+            log(bot, `No home_chest set and no chest within 32 blocks. Use !rememberHere("home_chest") next to a chest first.`);
+            return false;
+        }
+        chestPos = { x: nearby.position.x, y: nearby.position.y, z: nearby.position.z };
+        log(bot, `No home_chest saved; using nearest chest at (${chestPos.x}, ${chestPos.y}, ${chestPos.z}) for this run.`);
+    } else {
+        log(bot, `mineOre: home_chest at (${chestPos.x}, ${chestPos.y}, ${chestPos.z}).`);
+    }
+
+    // Save the mining entry so deposit cycles can return.
+    const entry = bot.entity.position;
+    const miningEntry = { x: Math.floor(entry.x), y: Math.floor(entry.y), z: Math.floor(entry.z) };
+    if (memBank) memBank.rememberPlace('mining_entry', miningEntry.x, miningEntry.y, miningEntry.z);
+    log(bot, `mineOre: mining_entry saved at (${miningEntry.x}, ${miningEntry.y}, ${miningEntry.z}).`);
+
+    // Descend to the best working Y for this ore via a manual staircase. Pathfinder
+    // will dig straight down if asked to descend through stone, which is what we want
+    // to avoid. For ascents we do nothing — the bot is presumably already above the ore.
+    const startY = Math.floor(bot.entity.position.y);
+    const targetY = getBestY(oreName, startY);
+    if (targetY != null && targetY < startY - 3) {
+        log(bot, `mineOre: descending to working Y=${targetY} (best for ${oreInfo.display}).`);
+        const navOk = await digStaircaseTo(bot, targetY, direction, oreInfo.block_names);
+        if (!navOk) {
+            log(bot, `Staircase descent did not complete; mining at Y=${Math.floor(bot.entity.position.y)} instead.`);
+        }
+        // Update the mining entry to where we actually ended up so deposit cycles return here.
+        const post = bot.entity.position;
+        miningEntry.x = Math.floor(post.x);
+        miningEntry.y = Math.floor(post.y);
+        miningEntry.z = Math.floor(post.z);
+        if (memBank) memBank.rememberPlace('mining_entry', miningEntry.x, miningEntry.y, miningEntry.z);
+        log(bot, `mineOre: mining_entry updated to (${miningEntry.x}, ${miningEntry.y}, ${miningEntry.z}).`);
+    } else if (targetY != null && targetY > startY + 3) {
+        log(bot, `mineOre: target Y=${targetY} is above current Y=${startY}; mining here instead (no ascent staircase yet).`);
+    } else {
+        log(bot, `mineOre: already at working Y; starting corridor.`);
+    }
+
+    log(bot, `mineOre: branch-mining ${direction.label} for ${oreInfo.display}, target ${num}.`);
+    const dropKeys = ORE_DROPS[oreInfo.key] || [];
+    const oreBlockNames = oreInfo.block_names || [];
+    const countOreOnHand = () => {
+        let total = 0;
+        for (const item of bot.inventory.items()) {
+            if (dropKeys.includes(item.name) || oreBlockNames.includes(item.name)) {
+                total += item.count;
+            }
+        }
+        return total;
+    };
+
+    // Cumulative tracker that survives deposits. We capture inventory deltas across
+    // each iteration; positive deltas (mined more) are added, negative deltas (deposit)
+    // are ignored.
+    let cumulativeMined = 0;
+    let lastOnHand = countOreOnHand();
+
+    const TORCH_INTERVAL = 6;
+    const MAX_STEPS = 500;
+    let stepsSinceTorch = 0;
+    let steps = 0;
+    let exitReason = null;
+
+    while (!bot.interrupt_code && steps < MAX_STEPS) {
+        const nowOnHand = countOreOnHand();
+        const delta = nowOnHand - lastOnHand;
+        if (delta > 0) cumulativeMined += delta;
+        lastOnHand = nowOnHand;
+
+        if (cumulativeMined >= num) {
+            exitReason = `target reached (${cumulativeMined}/${num} ${oreInfo.display})`;
+            break;
+        }
+        if (bot.inventory.emptySlotCount() <= 2) {
+            log(bot, `mineOre: inventory near full at step ${steps}, depositing.`);
+            const ok = await returnToChestAndDeposit(bot, chestPos, oreName, miningEntry);
+            if (!ok) {
+                exitReason = `deposit cycle failed`;
+                log(bot, `mineOre: deposit cycle failed; stopping.`);
+                return false;
+            }
+            // After deposit, on-hand is ~0; reset baseline so the next mining counts cleanly.
+            lastOnHand = countOreOnHand();
+            continue;
+        }
+
+        const collected = await branchMineStep(bot, direction, oreName);
+        if (collected == null) {
+            exitReason = `corridor blocked at step ${steps}`;
+            break;
+        }
+        steps++;
+        stepsSinceTorch++;
+        if (steps % 5 === 0) {
+            log(bot, `mineOre: step ${steps}, cumulative ${cumulativeMined}/${num} ${oreInfo.display}.`);
+        }
+
+        if (stepsSinceTorch >= TORCH_INTERVAL) {
+            await placeTorchOnWall(bot, direction);
+            stepsSinceTorch = 0;
+        }
+    }
+    if (bot.interrupt_code) exitReason = exitReason || 'interrupted';
+    if (steps >= MAX_STEPS) exitReason = exitReason || `max steps (${MAX_STEPS}) reached`;
+
+    if (!bot.interrupt_code) {
+        await returnToChestAndDeposit(bot, chestPos, oreName, miningEntry);
+    }
+    log(bot, `mineOre: run complete. Reason: ${exitReason}. Cumulative mined: ${cumulativeMined} ${oreInfo.display}; on hand: ${countOreOnHand()}.`);
+    return true;
+}

@@ -1,0 +1,127 @@
+{
+  "version": "1.21",
+  "notes": [
+    "World height spans Y=-64 (bedrock) to Y=320 (sky limit). Total height: 384 blocks.",
+    "Below Y=0, stone becomes deepslate — takes significantly longer to mine. Bring an iron pickaxe minimum.",
+    "Old Y=11 diamond advice is obsolete since the 1.18 Caves & Cliffs update.",
+    "Fortune III increases drops for: coal, redstone, lapis, diamond, emerald, nether gold, nether quartz, copper. Does NOT affect iron, gold ingots, or ancient debris.",
+    "Using the wrong pickaxe tier on an ore destroys the block without dropping anything."
+  ],
+  "pickaxe_tiers": {
+    "wooden":  "Coal ore, stone",
+    "stone":   "Copper, iron, lapis lazuli, nether quartz, nether gold",
+    "iron":    "Gold, redstone, diamond, emerald",
+    "diamond": "Ancient debris, obsidian"
+  },
+  "overworld_ores": [
+    {
+      "ore": "Coal",
+      "color": "Black",
+      "y_range": { "min": 0, "max": 320 },
+      "best_y_levels": [45, 95, 136],
+      "min_pickaxe": "wooden",
+      "uses": ["Torches", "Furnace fuel", "Smelting"],
+      "notes": "Most common ore. Also exposed on mountain surfaces — great for early game. Logs can substitute as furnace fuel but coal is far more efficient."
+    },
+    {
+      "ore": "Copper",
+      "color": "Orange",
+      "y_range": { "min": -16, "max": 112 },
+      "best_y_levels": [48],
+      "min_pickaxe": "stone",
+      "uses": ["Decoration blocks", "Lightning rods", "Spyglasses", "Brushes", "Copper doors/trapdoors (1.21+)"],
+      "notes": "Very common. Spawns in larger veins in Dripstone cave biomes. Oxidizes over time, changing color from orange to green."
+    },
+    {
+      "ore": "Iron",
+      "color": "Tan/orange flecks",
+      "y_range": { "min": -64, "max": 320 },
+      "best_y_levels": [16, 232],
+      "min_pickaxe": "stone",
+      "uses": ["Tools", "Armor", "Shield", "Doors", "Shears", "Redstone components"],
+      "notes": "Two distinct peaks. Y=16 for underground mining; Y=232 for mountain biomes where iron veins are exposed on the surface. Check mountain peaks early game for fast iron. Bonus spawns in Stony Peaks biome."
+    },
+    {
+      "ore": "Lapis Lazuli",
+      "color": "Blue",
+      "y_range": { "min": -64, "max": 64 },
+      "best_y_levels": [-1, -2],
+      "min_pickaxe": "stone",
+      "uses": ["Enchanting (required)", "Blue dye"],
+      "notes": "Required to use the enchanting table. Slightly more common in Snowy biomes. Spawns as single blocks or small clusters."
+    },
+    {
+      "ore": "Gold",
+      "color": "Yellow",
+      "y_range": { "min": -64, "max": 32 },
+      "best_y_levels": [-16, -18],
+      "min_pickaxe": "iron",
+      "uses": ["Golden tools (high enchantability)", "Powered rails", "Clocks", "Piglin trading currency", "Netherite smithing"],
+      "notes": "Huge bonus spawn rate in Badlands biome up to Y=256 — worth seeking out for gold farming. Wearing gold armor prevents Piglins from attacking. Gold tools have terrible durability but excellent enchantability."
+    },
+    {
+      "ore": "Redstone",
+      "color": "Red",
+      "y_range": { "min": -64, "max": 16 },
+      "best_y_levels": [-59],
+      "min_pickaxe": "iron",
+      "uses": ["Circuits and automation", "Potion brewing (extends duration)", "Comparators", "Repeaters", "Pistons"],
+      "notes": "Drops 4-5 redstone dust per ore block. Fortune III can yield up to 8 dust. Shares its best depth with diamond — mining at Y=-59 will find both."
+    },
+    {
+      "ore": "Diamond",
+      "color": "Cyan/light blue",
+      "y_range": { "min": -64, "max": 16 },
+      "best_y_levels": [-59, -54],
+      "min_pickaxe": "iron",
+      "uses": ["Best overworld tools and armor", "Enchanting table (3 required)", "Jukeboxes", "Netherite upgrade base"],
+      "notes": "Sweet spot is Y=-54 to Y=-59. The old Y=11 advice is obsolete since 1.18. Sharing depth range with redstone and lapis means strip mining here is very efficient. More common in Jungle and Swamp biomes."
+    },
+    {
+      "ore": "Emerald",
+      "color": "Green",
+      "y_range": { "min": -16, "max": 320 },
+      "best_y_levels": [85, 224],
+      "min_pickaxe": "iron",
+      "uses": ["Villager trading currency"],
+      "notes": "MOUNTAIN BIOMES ONLY (Windswept Hills, Stony Peaks, etc). Will not spawn in flat terrain no matter how deep you dig. Rarer than ancient debris per chunk. Spawns as single blocks — never multi-block veins."
+    }
+  ],
+  "nether_ores": [
+    {
+      "ore": "Nether Quartz",
+      "color": "White flecks in netherrack",
+      "y_range": { "min": 10, "max": 125 },
+      "best_y_levels": [10, 114],
+      "min_pickaxe": "stone",
+      "uses": ["Daylight sensors", "Comparators", "Quartz decoration blocks"],
+      "notes": "Very common in the Nether. Easy to farm. Gives decent XP."
+    },
+    {
+      "ore": "Nether Gold",
+      "color": "Gold flecks in netherrack",
+      "y_range": { "min": 7, "max": 117 },
+      "best_y_levels": [15],
+      "min_pickaxe": "stone",
+      "uses": ["Gold nuggets (9 nuggets = 1 gold ingot)", "Piglin trading"],
+      "notes": "Mining this ore angers nearby Piglins. Wear at least one piece of gold armor to prevent hostility. Fortune increases nugget drops."
+    },
+    {
+      "ore": "Ancient Debris",
+      "color": "Dark brown, spiral texture",
+      "y_range": { "min": 8, "max": 119 },
+      "best_y_levels": [16],
+      "min_pickaxe": "diamond",
+      "uses": ["Smelted into Netherite Scrap", "Combined with gold ingots to make Netherite Ingots", "Upgrades diamond gear to Netherite"],
+      "notes": "The rarest ore in the game. Always fully buried — never exposed in cave walls or lava pools. Blast-resistant (immune to most explosions). Common strategy: TNT mining or placing beds and exploding them at Y=16. Requires 4 Netherite Scrap + 4 Gold Ingots per Netherite Ingot on a smithing table."
+    }
+  ],
+  "key_crafting_chains": {
+    "coal_to_torch": "Coal + Stick = 4 Torches",
+    "iron_progression": "Iron Ore -> Smelt -> Iron Ingot -> Craft Iron Pickaxe/Sword/Armor/Shield",
+    "diamond_progression": "Diamond Ore (iron pick required) -> Diamond -> Craft Diamond Tools/Armor -> Enchanting Table (3 diamonds + 2 obsidian + book)",
+    "netherite_progression": "Ancient Debris (diamond pick) -> Smelt -> Netherite Scrap (x4) + Gold Ingots (x4) -> Netherite Ingot -> Smithing Table + Diamond Gear + Netherite Upgrade Template = Netherite Gear",
+    "enchanting_table": "Requires: 3 Diamonds + 2 Obsidian + 1 Book. Needs Lapis Lazuli to operate.",
+    "lapis_for_enchanting": "Lapis Lazuli ore (stone pick) -> Lapis Lazuli -> Required per enchantment at enchanting table"
+  }
+}

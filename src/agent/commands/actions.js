@@ -20,7 +20,7 @@ function runAsAction (actionFn, resume = false, timeout = -1) {
         if (code_return.interrupted && !code_return.timedout)
             return;
         return code_return.message;
-    }
+    };
 
     return wrappedAction;
 }
@@ -177,7 +177,7 @@ export const actionsList = [
             skills.log(agent.bot, `No location named "${name}" saved.`);
             return;
             }
-            await skills.goToPosition(agent.bot, pos[0], pos[1], pos[2], 1);
+            await skills.goToPositionChunked(agent.bot, pos[0], pos[1], pos[2], 2);
         })
     },
     {
@@ -262,6 +262,33 @@ export const actionsList = [
         perform: runAsAction(async (agent, type, num) => {
             await skills.collectBlock(agent.bot, type, num);
         }, false, 10) // 10 minute timeout
+    },
+    {
+        name: '!mineOre',
+        description: 'Branch-mine for a specific ore at its best Y level. Validates pickaxe tier, places torches, returns to home_chest when full, then resumes. Save a chest position as "home_chest" first via !rememberHere or !setHomeChest.',
+        params: {
+            'ore_name': { type: 'string', description: 'Ore to mine, e.g. "iron", "coal", "diamond", "lapis_lazuli", "ancient_debris".' },
+            'num': { type: 'int', description: 'How many of the ore drops to collect.', domain: [1, Number.MAX_SAFE_INTEGER] }
+        },
+        perform: runAsAction(async (agent, ore_name, num) => {
+            await skills.mineOreAt(agent.bot, ore_name, num, { memoryBank: agent.memory_bank });
+        }, false, 30) // 30 minute timeout — mining is long-running
+    },
+    {
+        name: '!setHomeChest',
+        description: 'Save the position of the nearest chest (within 16 blocks) as "home_chest" for !mineOre to use as the deposit location.',
+        params: {},
+        perform: async function (agent) {
+            const chest = agent.bot.findBlock
+                ? agent.bot.findBlock({ matching: (b) => b && b.name === 'chest', maxDistance: 16 })
+                : null;
+            if (!chest) {
+                return 'No chest within 16 blocks. Stand next to a chest first.';
+            }
+            const p = chest.position;
+            agent.memory_bank.rememberPlace('home_chest', p.x, p.y, p.z);
+            return `Home chest saved at (${p.x}, ${p.y}, ${p.z}).`;
+        }
     },
     {
         name: '!craftRecipe',
@@ -477,7 +504,7 @@ export const actionsList = [
         description: 'Digs down a specified distance. Will stop if it reaches lava, water, or a fall of >=4 blocks below the bot.',
         params: {'distance': { type: 'int', description: 'Distance to dig down', domain: [1, Number.MAX_SAFE_INTEGER] }},
         perform: runAsAction(async (agent, distance) => {
-            await skills.digDown(agent.bot, distance)
+            await skills.digDown(agent.bot, distance);
         })
     },
     {

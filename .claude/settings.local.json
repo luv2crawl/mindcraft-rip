@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(npm --version)",
+      "WebFetch(domain:teamjm.github.io)",
+      "Bash(node *)",
+      "Bash(npx eslint *)",
+      "Bash(git stash *)",
+      "Bash(npm test *)"
+    ]
+  }
+}
