@@ -26,15 +26,56 @@ export function toSinglePrompt(turns, system=null, stop_seq='***', model_nicknam
     return prompt;
 }
 
+const STOPWORDS = new Set([
+    '', 'a', 'an', 'and', 'are', 'as', 'at', 'be', 'by', 'for', 'from',
+    'i', 'im', 'in', 'into', 'is', 'it', 'me', 'my', 'of', 'on', 'or',
+    'our', 'some', 'that', 'the', 'there', 'this', 'to', 'up', 'we',
+    'what', 'with', 'you', 'your',
+    'bot', 'assistant', 'deepseek', 'gpt',
+    'can', 'could', 'would', 'will', 'please', 'pls', 'hey', 'hi',
+    'hello', 'sure', 'okay', 'ok', 'alright', 'thanks', 'thank'
+]);
+
+const DOMAIN_KEYWORDS = new Set([
+    'attack', 'build', 'chest', 'collect', 'come', 'cook', 'craft',
+    'deposit', 'diamond', 'diamonds', 'dirt', 'follow', 'go', 'gold',
+    'house', 'iron', 'kill', 'look', 'mine', 'mining', 'ore', 'pickaxe',
+    'plan', 'plank', 'prepare', 'ready', 'sand', 'stone', 'stop', 'tool',
+    'trade', 'walk', 'wood', 'zombie'
+]);
+
 function _getWords(text) {
-    return text.replace(/[^a-zA-Z ]/g, '').toLowerCase().split(' ');
+    const tokens = String(text ?? '')
+        .toLowerCase()
+        .match(/[a-z0-9_]+/g) ?? [];
+    const words = new Set();
+
+    for (const token of tokens) {
+        const parts = token.split('_').filter(Boolean);
+        const hasDomainPart = parts.some(part => DOMAIN_KEYWORDS.has(part));
+        if (token.includes('_') && !hasDomainPart)
+            continue;
+
+        for (const part of parts) {
+            if (!STOPWORDS.has(part))
+                words.add(part);
+        }
+    }
+    return [...words];
 }
 
 export function wordOverlapScore(text1, text2) {
     const words1 = _getWords(text1);
     const words2 = _getWords(text2);
-    const intersection = words1.filter(word => words2.includes(word));
-    return intersection.length / (words1.length + words2.length - intersection.length);
+    if (words1.length === 0 || words2.length === 0)
+        return 0;
+
+    const wordSet2 = new Set(words2);
+    const intersection = words1.filter(word => wordSet2.has(word));
+    const unionSize = new Set([...words1, ...words2]).size;
+    const baseScore = intersection.length / unionSize;
+    const domainMatches = intersection.filter(word => DOMAIN_KEYWORDS.has(word)).length;
+    return baseScore + (domainMatches * 0.1);
 }
 
 // ensures stricter turn order and roles:

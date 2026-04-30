@@ -18,6 +18,7 @@ import { Task } from './tasks/tasks.js';
 import { speak } from './speak.js';
 import { log, validateNameFormat, handleDisconnection } from './connection_handler.js';
 import { TranscriptLogger } from './transcript_logger.js';
+import { ObjectiveStack } from './objectives/objective_stack.js';
 
 export class Agent {
     async start(load_mem=false, init_message=null, count_id=0) {
@@ -27,6 +28,7 @@ export class Agent {
 
         // Initialize components
         this.actions = new ActionManager(this);
+        this.objectives = new ObjectiveStack(this);
         this.prompter = new Prompter(this, settings.profile);
         this.name = (this.prompter.getName() || '').trim();
         this.transcript = new TranscriptLogger(this.name || 'unknown');

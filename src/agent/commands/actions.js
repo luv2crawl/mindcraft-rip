@@ -1,6 +1,7 @@
 import * as skills from '../library/skills.js';
 import settings from '../settings.js';
 import convoManager from '../conversation.js';
+import { runMiningObjective } from '../objectives/mining_objective.js';
 
 
 function runAsAction (actionFn, resume = false, timeout = -1) {
@@ -62,6 +63,17 @@ export const actionsList = [
             if (agent.self_prompter.isActive())
                 msg += ' Self-prompting still active.';
             return msg;
+        }
+    },
+    {
+        name: '!clearObjectives',
+        description: 'Cancel the current objective stack and stop any running action.',
+        perform: async function (agent) {
+            await agent.actions.stop();
+            const count = agent.objectives.clear();
+            agent.clearBotLogs();
+            agent.bot.emit('idle');
+            return `Cleared ${count} objective frame${count === 1 ? '' : 's'}.`;
         }
     },
     {
@@ -134,6 +146,14 @@ export const actionsList = [
             if (range < 32) {
                 skills.log(agent.bot, `Minimum search range is 32.`);
                 range = 32;
+            }
+            if (block_type === 'chest') {
+                const chest = skills.getNearestStoragePosition(agent.bot, range);
+                if (chest) {
+                    skills.log(agent.bot, `Found chest at (${chest.x}, ${chest.y}, ${chest.z}). Navigating...`);
+                    await skills.goToPosition(agent.bot, chest.x, chest.y, chest.z, 4);
+                    return;
+                }
             }
             await skills.goToNearestBlock(agent.bot, block_type, 4, range);
         })
@@ -220,6 +240,26 @@ export const actionsList = [
         })
     },
     {
+        name: '!depositAll',
+        description: 'Deposit every stack of the named item into the nearest chest. Use this when clearing inventory; do not use !putInChest when you mean all stacks.',
+        params: {
+            'item_name': { type: 'ItemName', description: 'The item to deposit completely.' }
+        },
+        perform: runAsAction(async (agent, item_name) => {
+            await skills.depositAll(agent.bot, item_name);
+        })
+    },
+    {
+        name: '!depositMiningLoot',
+        description: 'Deposit mined ore drops and common mining spoil blocks into the nearest chest. Use after or during mining runs to free inventory without depositing tools/supplies.',
+        params: {
+            'ore_name': { type: 'string', description: 'Ore being mined, e.g. "diamond", "iron", "coal", "ancient_debris".' }
+        },
+        perform: runAsAction(async (agent, ore_name) => {
+            await skills.depositMiningLoot(agent.bot, ore_name);
+        })
+    },
+    {
         name: '!takeFromChest',
         description: 'Take the given items from the nearest chest.',
         params: {
@@ -236,6 +276,14 @@ export const actionsList = [
         params: { },
         perform: runAsAction(async (agent) => {
             await skills.viewChest(agent.bot);
+        })
+    },
+    {
+        name: '!recoverDroppedItems',
+        description: 'Pick up nearby dropped item entities. Use after mining, crafting, chest overflow, or accidental drops.',
+        params: { },
+        perform: runAsAction(async (agent) => {
+            await skills.pickupNearbyItems(agent.bot);
         })
     },
     {
@@ -264,6 +312,27 @@ export const actionsList = [
         }, false, 10) // 10 minute timeout
     },
     {
+        name: '!craftToolchainFor',
+        description: 'Craft a known tool such as wooden_pickaxe, stone_pickaxe, iron_pickaxe, or diamond_pickaxe from current inventory/nearby crafting table context. Use before travel/mining; it fails fast instead of gathering missing ingredients.',
+        params: {
+            'tool_name': { type: 'ItemName', description: 'The exact tool to prepare, e.g. "iron_pickaxe".' }
+        },
+        perform: runAsAction(async (agent, tool_name) => {
+            await skills.craftToolchainFor(agent.bot, tool_name);
+        }, false, 5)
+    },
+    {
+        name: '!gatherForRecipe',
+        description: 'Plan missing ingredients for a recipe, then gather simple nearby block-source ingredients when possible. Use for short local prep, not long-distance mining or chest retrieval.',
+        params: {
+            'item_name': { type: 'ItemName', description: 'The item to craft after gathering.' },
+            'num': { type: 'int', description: 'The desired output count to plan for.', domain: [1, Number.MAX_SAFE_INTEGER] }
+        },
+        perform: runAsAction(async (agent, item_name, num) => {
+            await skills.gatherForRecipe(agent.bot, item_name, num);
+        }, false, 10)
+    },
+    {
         name: '!prepareMiningRun',
         description: 'Before walking to a mine site, check/pull/craft mining supplies from inventory or home_chest. Use this first for mining requests when the bot may need to travel before digging; it fails fast if the user needs to stock supplies.',
         params: {
@@ -281,7 +350,7 @@ export const actionsList = [
             'num': { type: 'int', description: 'How many of the ore drops to collect.', domain: [1, Number.MAX_SAFE_INTEGER] }
         },
         perform: runAsAction(async (agent, ore_name, num) => {
-            await skills.mineOreAt(agent.bot, ore_name, num, { memoryBank: agent.memory_bank });
+            await runMiningObjective(agent, ore_name, num);
         }, false, 30) // 30 minute timeout — mining is long-running
     },
     {
@@ -289,15 +358,12 @@ export const actionsList = [
         description: 'Save the position of the nearest chest (within 16 blocks) as "home_chest" for !mineOre to use as the deposit location.',
         params: {},
         perform: async function (agent) {
-            const chest = agent.bot.findBlock
-                ? agent.bot.findBlock({ matching: (b) => b && b.name === 'chest', maxDistance: 16 })
-                : null;
+            const chest = skills.getNearestStoragePosition(agent.bot, 16);
             if (!chest) {
                 return 'No chest within 16 blocks. Stand next to a chest first.';
             }
-            const p = chest.position;
-            agent.memory_bank.rememberPlace('home_chest', p.x, p.y, p.z);
-            return `Home chest saved at (${p.x}, ${p.y}, ${p.z}).`;
+            agent.memory_bank.rememberPlace('home_chest', chest.x, chest.y, chest.z);
+            return `Home chest saved at (${chest.x}, ${chest.y}, ${chest.z}).`;
         }
     },
     {

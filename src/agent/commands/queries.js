@@ -4,6 +4,7 @@ import { getCommandDocs } from './index.js';
 import convoManager from '../conversation.js';
 import { checkLevelBlueprint, checkBlueprint } from '../tasks/construction_tasks.js';
 import { load } from 'cheerio';
+import { formatMiningPlan, planMiningRun } from '../objectives/mining_objective.js';
 
 const pad = (str) => {
     return '\n' + str + '\n';
@@ -217,6 +218,24 @@ export const queryList = [
         description: "Get all available modes and their docs and see which are on/off.",
         perform: function (agent) {
             return agent.bot.modes.getDocs();
+        }
+    },
+    {
+        name: '!objectives',
+        description: 'Show the current objective stack and active high-level workflow state.',
+        perform: function (agent) {
+            return agent.objectives.getSummary();
+        }
+    },
+    {
+        name: '!planMiningRun',
+        description: 'Plan a mining run without moving. Reports needed supplies, current inventory, missing supplies, and recommended commands.',
+        params: {
+            'ore_name': { type: 'string', description: 'Ore to mine, e.g. "diamond", "iron", "ancient_debris".' },
+            'num': { type: 'int', description: 'How many ore drops to collect.', domain: [1, Number.MAX_SAFE_INTEGER] }
+        },
+        perform: function (agent, ore_name, num) {
+            return formatMiningPlan(planMiningRun(agent, ore_name, num));
         }
     },
     {

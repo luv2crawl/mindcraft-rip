@@ -13,6 +13,7 @@ A practical guide to talking to a Mindcraft bot effectively. Setup and install l
 | `Remember this spot as base` | `!rememberHere("base")` |
 | `Go to base` | `!goToRememberedPlace("base")` |
 | `Save this chest as the home chest` (stand next to it) | `!setHomeChest` |
+| `Get ready to mine diamonds before we walk over there` | `!prepareMiningRun("diamond")` |
 | `Mine 32 iron` (with `home_chest` set) | `!mineOre("iron", 32)` |
 | `Build a 5x5 cobblestone hut here` | `!newAction("Build a 5x5 cobblestone hut at my position")` |
 | `Survive on your own forever` | `!goal("Survive forever: gather food, build shelter, sleep at night...")` then `!endGoal` to stop |
@@ -119,8 +120,11 @@ Generated from `actionsList` and `queryList` (see `src/agent/commands/`). Catego
 | `!discard(item_name, num)` | Drop items. Walks away briefly so they don't clutter your feet. |
 | `!consume(item_name)` | Eat or drink. |
 | `!putInChest(item_name, num)` | Deposit into the nearest chest within 32 blocks. |
+| `!depositAll(item_name)` | Deposit every stack of one item into the nearest chest. |
+| `!depositMiningLoot(ore_name)` | Deposit ore drops and common mining spoil while keeping tools/supplies. |
 | `!takeFromChest(item_name, num)` | Withdraw from the nearest chest. |
 | `!viewChest` | Print contents of the nearest chest. |
+| `!recoverDroppedItems` | Pick up nearby dropped items after mining, crafting, or chest overflow. |
 | `!givePlayer(player, item, num)` | Drop items at a player's feet. |
 
 ### Gathering & mining
@@ -128,6 +132,7 @@ Generated from `actionsList` and `queryList` (see `src/agent/commands/`). Catego
 | Command | What it does |
 |---|---|
 | `!collectBlocks(type, num)` | Greedy nearest-block collection (no pattern, no torches). Useful for surface stuff like wood, dirt, stone. |
+| `!gatherForRecipe(item, num)` | Print missing recipe supplies, then gather simple nearby block-source ingredients when possible. |
 | `!prepareMiningRun(ore_name)` | Before walking to a mining site, check/pull/craft needed mining supplies from inventory or `home_chest`. Use this first when a mining request may require travel. |
 | `!mineOre(ore_name, num)` | Branch-mine for a specific ore at its best Y. Prepares supplies, validates pickaxe tier, places torches every 6 blocks, returns to `home_chest` when full, resumes. **Requires `home_chest` to be set first.** |
 | `!digDown(distance)` | Dig straight down with safety checks (stops at lava/water/long fall). Use sparingly. |
@@ -141,6 +146,7 @@ Known ore names for `!mineOre` (case- and form-insensitive — `iron`, `Iron`, `
 | Command | What it does |
 |---|---|
 | `!craftable` | List recipes you currently have materials for. |
+| `!craftToolchainFor(tool)` | Craft `wooden_pickaxe`, `stone_pickaxe`, `iron_pickaxe`, or `diamond_pickaxe` from current inventory/nearby crafting context; fails fast if materials are missing. |
 | `!craftRecipe(item, num)` | Craft a recipe `num` times (not `num` items — read the description). |
 | `!smeltItem(item, num)` | Smelt items in the nearest furnace. |
 | `!clearFurnace` | Take everything out of the nearest furnace. |

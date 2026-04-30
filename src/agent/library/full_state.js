@@ -55,7 +55,8 @@ export function getFullState(agent) {
         },
         action: {
             current: agent.isIdle() ? 'Idle' : agent.actions.currentActionLabel,
-            isIdle: agent.isIdle()
+            isIdle: agent.isIdle(),
+            objectives: agent.objectives ? agent.objectives.serialize() : []
         },
         surroundings: {
             below,

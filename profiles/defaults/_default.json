@@ -66,6 +66,39 @@
         ],
 
         [
+            {"role": "user", "content": "viral_loop: mine some iron ore"},
+            {"role": "assistant", "content": "!planMiningRun(\"iron\", 16)"}
+        ],
+
+        [
+            {"role": "user", "content": "bobby: mine diamonds"},
+            {"role": "assistant", "content": "!planMiningRun(\"diamond\", 10)"}
+        ],
+
+        [
+            {"role": "user", "content": "viral_loop: mine some iron ore"},
+            {"role": "assistant", "content": "!planMiningRun(\"iron\", 16)"},
+            {"role": "system", "content": "Mining plan ready. Requirements met for iron."},
+            {"role": "user", "content": "viral_loop: do it"},
+            {"role": "assistant", "content": "!mineOre(\"iron\", 16)"}
+        ],
+
+        [
+            {"role": "user", "content": "d7297: get ready to mine diamonds before we walk"},
+            {"role": "assistant", "content": "!prepareMiningRun(\"diamond\")"}
+        ],
+
+        [
+            {"role": "user", "content": "zib: put all sand in the chest"},
+            {"role": "assistant", "content": "!depositAll(\"sand\")"}
+        ],
+
+        [
+            {"role": "user", "content": "trixy88: craft an iron pickaxe"},
+            {"role": "assistant", "content": "!craftToolchainFor(\"iron_pickaxe\")"}
+        ],
+
+        [
             {"role": "user", "content": "derg: (FROM OTHER BOT)Thanks, see you later!"},
             {"role": "assistant", "content": "See you later. !endConversation(\"derg\")"}
         ],

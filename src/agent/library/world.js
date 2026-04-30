@@ -1,6 +1,12 @@
 import pf from 'mineflayer-pathfinder';
 import * as mc from '../../utils/mcdata.js';
 
+const STORAGE_BLOCK_NAMES = new Set(['chest', 'trapped_chest', 'barrel']);
+
+export function isStorageBlock(block) {
+    return !!block && STORAGE_BLOCK_NAMES.has(block.name);
+}
+
 
 export function getNearestFreeSpace(bot, size=1, distance=8) {
     /**
@@ -157,6 +163,11 @@ export function getNearestBlocksWhere(bot, predicate, distance=8, count=10000) {
     return blocks;
 }
 
+export function getNearestStorageBlock(bot, distance=16) {
+    let blocks = getNearestBlocksWhere(bot, block => isStorageBlock(block), distance, 1);
+    return blocks.length > 0 ? blocks[0] : null;
+}
+
 
 export function getNearestBlock(bot, block_type, distance=16) {
      /**
@@ -168,6 +179,9 @@ export function getNearestBlock(bot, block_type, distance=16) {
      * @example
      * let coalBlock = world.getNearestBlock(bot, 'coal_ore', 16);
      **/
+    if (block_type === 'chest')
+        return getNearestStorageBlock(bot, distance);
+
     let blocks = getNearestBlocks(bot, block_type, distance, 1);
     if (blocks.length > 0) {
         return blocks[0];

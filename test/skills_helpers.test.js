@@ -9,7 +9,10 @@ import {
     _isHazardousFluid,
     _countEligibleMiningPickaxes,
     _missingMiningSupplies,
+    buildMiningPlanFromInventory,
+    formatChestContents,
     getMiningHomeChestPosition,
+    getNearestStoragePosition,
 } from '../src/agent/library/skills.js';
 import settings from '../settings.js';
 
@@ -182,5 +185,109 @@ describe('mining supply helpers', () => {
             z: -4,
             source: 'memory',
         });
+    });
+
+    test('storage lookup accepts chest-like containers and remembers the last one', () => {
+        const chestPos = new Vec3(3, 64, 0);
+        const bot = {
+            entity: { position: new Vec3(0, 64, 0) },
+            findBlocks({ matching }) {
+                return matching({ name: 'barrel', position: chestPos }) ? [chestPos] : [];
+            },
+            blockAt(pos) {
+                if (pos.equals(chestPos)) return { name: 'barrel', position: chestPos };
+                return { name: 'air', position: pos };
+            },
+        };
+
+        assert.deepEqual(getNearestStoragePosition(bot, 16), {
+            x: 3,
+            y: 64,
+            z: 0,
+            source: 'nearby',
+        });
+        assert.deepEqual(bot.mindcraftLastChestPosition, {
+            x: 3,
+            y: 64,
+            z: 0,
+            name: 'barrel',
+        });
+    });
+
+    test('home chest lookup falls back to last known storage position when scanning misses', () => {
+        const chestPos = new Vec3(43, 63, -9);
+        const bot = {
+            entity: { position: new Vec3(43, 63, -8) },
+            mindcraftLastChestPosition: { x: 43, y: 63, z: -9, name: 'chest' },
+            findBlocks() {
+                return [];
+            },
+            blockAt(pos) {
+                if (pos.equals(chestPos)) return { name: 'chest', position: chestPos };
+                return { name: 'air', position: pos };
+            },
+        };
+
+        assert.deepEqual(getMiningHomeChestPosition(bot, null), {
+            x: 43,
+            y: 63,
+            z: -9,
+            source: 'last_known',
+        });
+    });
+
+    test('diamond mining plan reports missing supplies before travel', () => {
+        const plan = buildMiningPlanFromInventory('diamond', 10, {
+            stone_pickaxe: 3,
+            stick: 14,
+            crafting_table: 1,
+        }, { currentY: 64 });
+
+        assert.equal(plan.ok, false);
+        assert.equal(plan.reason, 'missing_supplies');
+        assert.equal(plan.missing.iron_pickaxe, 3);
+        assert.match(plan.recommendedCommands.join('\n'), /takeFromChest\("iron_pickaxe", 3\)/);
+    });
+
+    test('mining plan succeeds with sufficient spare tools and table', () => {
+        const plan = buildMiningPlanFromInventory('iron', 32, {
+            stone_pickaxe: 2,
+            crafting_table: 1,
+        }, { currentY: 64 });
+
+        assert.equal(plan.ok, true);
+        assert.equal(plan.reason, 'ready');
+    });
+
+    test('mining plan treats craftable pickaxes as ready supplies', () => {
+        const plan = buildMiningPlanFromInventory('diamond', 10, {
+            iron_ingot: 9,
+            stick: 6,
+            crafting_table: 1,
+            torch: 32,
+        }, { currentY: 64 });
+
+        assert.equal(plan.ok, true);
+        assert.equal(plan.reason, 'ready');
+        assert.equal(plan.have.craftable_iron_pickaxe, 3);
+    });
+});
+
+describe('chest content formatting', () => {
+    test('aggregates full chest contents by item type', () => {
+        const formatted = formatChestContents([
+            { name: 'raw_copper', count: 64 },
+            { name: 'lapis_lazuli', count: 64 },
+            { name: 'iron_pickaxe', count: 1 },
+            { name: 'raw_copper', count: 38 },
+            { name: 'raw_iron', count: 7 },
+            { name: 'iron_pickaxe', count: 1 },
+        ]);
+
+        assert.match(formatted, /6 stacks across 4 item types/);
+        assert.match(formatted, /raw_copper: 102 \(2 stacks\)/);
+        assert.match(formatted, /iron_pickaxe: 2 \(2 stacks\)/);
+        assert.match(formatted, /raw_iron: 7 \(1 stack\)/);
+        assert.doesNotMatch(formatted, /64 raw_copper\n/);
     });
 });

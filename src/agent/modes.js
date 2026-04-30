@@ -10,6 +10,48 @@ async function say(agent, message) {
     agent.openChat(message);
 }
 
+function isWaterBlock(block) {
+    return block?.name === 'water' || block?.name === 'flowing_water';
+}
+
+function isStandableDryPosition(bot, position) {
+    const feet = bot.blockAt(position);
+    const head = bot.blockAt(position.offset(0, 1, 0));
+    const below = bot.blockAt(position.offset(0, -1, 0));
+    return feet?.name === 'air'
+        && head?.name === 'air'
+        && below
+        && below.name !== 'air'
+        && !isWaterBlock(below)
+        && below.boundingBox === 'block';
+}
+
+function findNearestDryStandPosition(bot, range = 16) {
+    const positions = bot.findBlocks({
+        matching: block => block?.name === 'air',
+        maxDistance: range,
+        count: 256,
+    });
+    return positions
+        .filter(position => isStandableDryPosition(bot, position))
+        .sort((a, b) => a.distanceTo(bot.entity.position) - b.distanceTo(bot.entity.position))[0] || null;
+}
+
+function actionNeedsUnstuck(actionLabel) {
+    if (!actionLabel) return false;
+    if (actionLabel.startsWith('mode:')) return false;
+    return [
+        'collectBlocks',
+        'digDown',
+        'followPlayer',
+        'goToCoordinates',
+        'goToPlayer',
+        'mineOre',
+        'moveAway',
+        'searchForBlock',
+    ].some(name => actionLabel.includes(name));
+}
+
 // a mode is a function that is called every tick to respond immediately to the world
 // it has the following fields:
 // on: whether 'update' is called every tick
@@ -35,10 +77,18 @@ const modes_list = [
             let blockAbove = bot.blockAt(bot.entity.position.offset(0, 1, 0));
             if (!block) block = {name: 'air'}; // hacky fix when blocks are not loaded
             if (!blockAbove) blockAbove = {name: 'air'};
-            if (blockAbove.name === 'water') {
-                // does not call execute so does not interrupt other actions
-                if (!bot.pathfinder.goal) {
-                    bot.setControlState('jump', true);
+            if (isWaterBlock(block) || isWaterBlock(blockAbove)) {
+                bot.setControlState('jump', true);
+                if (!this.active && !bot.pathfinder.goal) {
+                    execute(this, agent, async () => {
+                        const dryPosition = findNearestDryStandPosition(bot, 16);
+                        if (dryPosition) {
+                            await skills.goToPosition(bot, dryPosition.x, dryPosition.y, dryPosition.z, 0);
+                        }
+                        else {
+                            await skills.moveAway(bot, 8);
+                        }
+                    }, 15);
                 }
             }
             else if (this.fall_blocks.some(name => blockAbove.name.includes(name))) {
@@ -99,6 +149,7 @@ const modes_list = [
         last_time: Date.now(),
         max_stuck_time: 20,
         prev_dig_block: null,
+        last_unstuck_time: 0,
         update: async function (agent) {
             if (agent.isIdle()) { 
                 this.prev_location = null;
@@ -106,11 +157,27 @@ const modes_list = [
                 return; // don't get stuck when idle
             }
             const bot = agent.bot;
+            const stuckAction = agent.actions.currentActionLabel || '';
+            if (!actionNeedsUnstuck(stuckAction)) {
+                this.prev_location = bot.entity.position.clone();
+                this.stuck_time = 0;
+                this.prev_dig_block = null;
+                this.last_time = Date.now();
+                return;
+            }
+            if (Date.now() - this.last_unstuck_time < 30000) {
+                this.last_time = Date.now();
+                return;
+            }
             const cur_dig_block = bot.targetDigBlock;
             if (cur_dig_block && !this.prev_dig_block) {
                 this.prev_dig_block = cur_dig_block;
             }
-            if (this.prev_location && this.prev_location.distanceTo(bot.entity.position) < this.distance && cur_dig_block == this.prev_dig_block) {
+            const inWater = isWaterBlock(bot.blockAt(bot.entity.position)) || isWaterBlock(bot.blockAt(bot.entity.position.offset(0, 1, 0)));
+            const stillDiggingSameBlock = cur_dig_block && cur_dig_block == this.prev_dig_block;
+            const barelyMoved = this.prev_location && this.prev_location.distanceTo(bot.entity.position) < this.distance;
+            const trulyStationary = this.prev_location && this.prev_location.distanceTo(bot.entity.position) < 0.25;
+            if (barelyMoved && (stillDiggingSameBlock || (inWater && trulyStationary) || (!bot.pathfinder.goal && trulyStationary))) {
                 this.stuck_time += (Date.now() - this.last_time) / 1000;
             }
             else {
@@ -118,14 +185,22 @@ const modes_list = [
                 this.stuck_time = 0;
                 this.prev_dig_block = null;
             }
-            const max_stuck_time = cur_dig_block?.name === 'obsidian' ? this.max_stuck_time * 2 : this.max_stuck_time;
+            const max_stuck_time = cur_dig_block?.name === 'obsidian' ? this.max_stuck_time * 2 : this.max_stuck_time * 1.5;
             if (this.stuck_time > max_stuck_time) {
                 say(agent, 'I\'m stuck!');
                 this.stuck_time = 0;
+                this.last_unstuck_time = Date.now();
                 execute(this, agent, async () => {
-                    const crashTimeout = setTimeout(() => { agent.cleanKill("Got stuck and couldn't get unstuck") }, 10000);
-                    await skills.moveAway(bot, 5);
-                    clearTimeout(crashTimeout);
+                    if (inWater) {
+                        const dryPosition = findNearestDryStandPosition(bot, 16);
+                        if (dryPosition)
+                            await skills.goToPosition(bot, dryPosition.x, dryPosition.y, dryPosition.z, 0);
+                        else
+                            await skills.moveAway(bot, 8);
+                    }
+                    else {
+                        await skills.moveAway(bot, 5);
+                    }
                     say(agent, 'I\'m free.');
                 });
             }
@@ -135,6 +210,7 @@ const modes_list = [
             this.prev_location = null;
             this.stuck_time = 0;
             this.prev_dig_block = null;
+            this.last_unstuck_time = 0;
         }
     },
     {
@@ -195,10 +271,26 @@ const modes_list = [
         wait: 2, // number of seconds to wait after noticing an item to pick it up
         prev_item: null,
         noticed_at: -1,
+        failed_items: new Map(),
+        failed_item_cooldown_ms: 30000,
+        itemKey: function (item) {
+            const pos = item.position;
+            return `${item.id || item.uuid || item.name}:${Math.floor(pos.x)}:${Math.floor(pos.y)}:${Math.floor(pos.z)}`;
+        },
         update: async function (agent) {
+            if (!agent.isIdle()) {
+                this.noticed_at = -1;
+                return;
+            }
             let item = world.getNearestEntityWhere(agent.bot, entity => entity.name === 'item', 8);
             let empty_inv_slots = agent.bot.inventory.emptySlotCount();
-            if (item && item !== this.prev_item && await world.isClearPath(agent.bot, item) && empty_inv_slots > 1) {
+            const itemKey = item ? this.itemKey(item) : null;
+            const failedAt = itemKey ? this.failed_items.get(itemKey) : null;
+            if (failedAt && Date.now() - failedAt > this.failed_item_cooldown_ms) {
+                this.failed_items.delete(itemKey);
+            }
+            const recentlyFailed = failedAt && Date.now() - failedAt <= this.failed_item_cooldown_ms;
+            if (item && item !== this.prev_item && !recentlyFailed && await world.isClearPath(agent.bot, item) && empty_inv_slots > 1) {
                 if (this.noticed_at === -1) {
                     this.noticed_at = Date.now();
                 }
@@ -206,7 +298,12 @@ const modes_list = [
                     say(agent, `Picking up item!`);
                     this.prev_item = item;
                     execute(this, agent, async () => {
-                        await skills.pickupNearbyItems(agent.bot);
+                        try {
+                            await skills.pickupNearbyItems(agent.bot);
+                        } catch (err) {
+                            this.failed_items.set(itemKey, Date.now());
+                            throw err;
+                        }
                     });
                     this.noticed_at = -1;
                 }
@@ -308,10 +405,15 @@ async function execute(mode, agent, func, timeout=-1) {
         agent.self_prompter.stopLoop();
     let interrupted_action = agent.actions.currentActionLabel;
     mode.active = true;
-    let code_return = await agent.actions.runAction(`mode:${mode.name}`, async () => {
-        await func();
-    }, { timeout });
-    mode.active = false;
+    let code_return;
+    try {
+        code_return = await agent.actions.runAction(`mode:${mode.name}`, async () => {
+            await func();
+        }, { timeout });
+    } finally {
+        mode.active = false;
+    }
+    if (!code_return) return;
     console.log(`Mode ${mode.name} finished executing, code_return: ${code_return.message}`);
 
     let should_reprompt = 
