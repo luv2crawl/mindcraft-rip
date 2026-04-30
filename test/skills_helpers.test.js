@@ -7,6 +7,9 @@ import {
     _goalApproxDistance,
     _isPassableForCorridor,
     _isHazardousFluid,
+    _countEligibleMiningPickaxes,
+    _missingMiningSupplies,
+    getMiningHomeChestPosition,
 } from '../src/agent/library/skills.js';
 import settings from '../settings.js';
 
@@ -126,5 +129,58 @@ describe('_isHazardousFluid', () => {
     test('null block is not hazardous', () => {
         assert.equal(_isHazardousFluid(null), false);
         assert.equal(_isHazardousFluid(undefined), false);
+    });
+});
+
+describe('mining supply helpers', () => {
+    test('counts only pickaxes that can mine the requested tier', () => {
+        const inventory = {
+            wooden_pickaxe: 2,
+            stone_pickaxe: 1,
+            iron_pickaxe: 2,
+            diamond_pickaxe: 1,
+        };
+        assert.equal(_countEligibleMiningPickaxes(inventory, 'stone'), 4);
+        assert.equal(_countEligibleMiningPickaxes(inventory, 'iron'), 3);
+        assert.equal(_countEligibleMiningPickaxes(inventory, 'diamond'), 1);
+    });
+
+    test('diamond-tier ore supply asks for iron ingots and sticks when iron picks can be crafted', () => {
+        assert.deepEqual(
+            _missingMiningSupplies({ iron_pickaxe: 1, iron_ingot: 3, stick: 2, crafting_table: 1 }, 'iron', 3),
+            { iron_ingot: 3, stick: 2 },
+        );
+    });
+
+    test('sufficient spare iron pickaxes only needs a crafting table when missing', () => {
+        assert.deepEqual(
+            _missingMiningSupplies({ iron_pickaxe: 3, torch: 12 }, 'iron', 3),
+            { crafting_table: 1 },
+        );
+    });
+
+    test('stone-tier runs request spare stone pickaxes, not impossible stone ingots', () => {
+        assert.deepEqual(
+            _missingMiningSupplies({ stone_pickaxe: 1, crafting_table: 1 }, 'stone', 2),
+            { cobblestone: 3, stick: 2 },
+        );
+    });
+
+    test('stone-tier runs count cobblestone and sticks as craftable spare pickaxes', () => {
+        assert.deepEqual(
+            _missingMiningSupplies({ stone_pickaxe: 1, cobblestone: 3, stick: 2, crafting_table: 1 }, 'stone', 2),
+            {},
+        );
+    });
+
+    test('home chest lookup prefers saved memory over a nearby chest', () => {
+        const bot = {};
+        const memoryBank = { recallPlace: name => name === 'home_chest' ? [70, 64, -4] : null };
+        assert.deepEqual(getMiningHomeChestPosition(bot, memoryBank), {
+            x: 70,
+            y: 64,
+            z: -4,
+            source: 'memory',
+        });
     });
 });

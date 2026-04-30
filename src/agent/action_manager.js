@@ -81,6 +81,11 @@ export class ActionManager {
             }
             this.last_action_time = Date.now();
             console.log('executing code...\n');
+            const actionStart = Date.now();
+            this.agent.transcript?.record('action.start', {
+                actionLabel,
+                timeout
+            }, 'action_manager');
 
             // await current action to finish (executing=false), with 10 seconds timeout
             // also tell agent.bot to stop various actions
@@ -122,6 +127,13 @@ export class ActionManager {
             }
 
             // return action status report
+            this.agent.transcript?.record('action.end', {
+                actionLabel,
+                duration_ms: Date.now() - actionStart,
+                interrupted,
+                timedout,
+                output
+            }, 'action_manager');
             return { success: true, message: output, interrupted, timedout };
         } catch (err) {
             this.executing = false;
@@ -145,6 +157,12 @@ export class ActionManager {
             if (!interrupted) {
                 this.agent.bot.emit('idle');
             }
+            this.agent.transcript?.record('action.failure', {
+                actionLabel,
+                error: err,
+                message,
+                interrupted
+            }, 'action_manager');
             return { success: false, message, interrupted, timedout: false };
         }
     }
@@ -169,6 +187,10 @@ export class ActionManager {
         return setTimeout(async () => {
             console.warn(`Code execution timed out after ${TIMEOUT_MINS} minutes. Attempting force stop.`);
             this.timedout = true;
+            this.agent.transcript?.record('action.timeout', {
+                actionLabel: this.currentActionLabel,
+                timeout_mins: TIMEOUT_MINS
+            }, 'action_manager');
             this.agent.history.add('system', `Code execution timed out after ${TIMEOUT_MINS} minutes. Attempting force stop.`);
             await this.stop(); // last attempt to stop
         }, TIMEOUT_MINS * 60 * 1000);

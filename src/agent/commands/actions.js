@@ -264,8 +264,18 @@ export const actionsList = [
         }, false, 10) // 10 minute timeout
     },
     {
+        name: '!prepareMiningRun',
+        description: 'Before walking to a mine site, check/pull/craft mining supplies from inventory or home_chest. Use this first for mining requests when the bot may need to travel before digging; it fails fast if the user needs to stock supplies.',
+        params: {
+            'ore_name': { type: 'string', description: 'Ore to prepare for, e.g. "iron", "diamond", "ancient_debris".' }
+        },
+        perform: runAsAction(async (agent, ore_name) => {
+            await skills.prepareMiningRun(agent.bot, ore_name, { memoryBank: agent.memory_bank });
+        }, false, 5)
+    },
+    {
         name: '!mineOre',
-        description: 'Branch-mine for a specific ore at its best Y level. Validates pickaxe tier, places torches, returns to home_chest when full, then resumes. Save a chest position as "home_chest" first via !rememberHere or !setHomeChest.',
+        description: 'Branch-mine for a specific ore at its best Y level. Prepares supplies from inventory/home_chest before digging, validates pickaxe tier, places torches, returns to home_chest when full, then resumes. Save a chest position as "home_chest" first via !rememberHere or !setHomeChest.',
         params: {
             'ore_name': { type: 'string', description: 'Ore to mine, e.g. "iron", "coal", "diamond", "lapis_lazuli", "ancient_debris".' },
             'num': { type: 'int', description: 'How many of the ore drops to collect.', domain: [1, Number.MAX_SAFE_INTEGER] }

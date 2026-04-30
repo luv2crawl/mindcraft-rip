@@ -46,6 +46,7 @@ const settings = {
     "relevant_docs_count": 5, // number of relevant code function docs to select for prompting. -1 for all
 
     "max_messages": 15, // max number of messages to keep in context
+    "memory_summary_timeout_ms": 20000, // max time to wait for LLM memory summarization before keeping old memory
     "num_examples": 2, // number of examples to give to the model
     "max_commands": -1, // max number of commands that can be used in consecutive responses. -1 for no limit
     "show_command_syntax": "full", // "full", "shortened", or "none"
@@ -67,6 +68,10 @@ const settings = {
     "nav_chunk_retry_limit": 2, // retries per chunk before giving up that chunk
 
     "log_all_prompts": false, // log ALL prompts to file
+    "transcript_logging": true, // append JSONL runtime transcript events to ./bots/{bot}/transcripts
+    "transcript_include_prompts": false, // include full prompt bodies in transcript logs
+    "transcript_include_code": true, // include generated action code in transcript logs
+    "transcript_max_field_chars": 20000, // truncate long transcript fields
 };
 
 export default settings;

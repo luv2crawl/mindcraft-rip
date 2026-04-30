@@ -70,10 +70,19 @@ export class Coder {
                 continue;
             }
             code = res.substring(res.indexOf('```')+3, res.lastIndexOf('```'));
+            this.agent.transcript?.record('code.generated', {
+                attempt: i + 1,
+                code
+            }, 'coder');
             const result = await this._stageCode(code);
             const executionModule = result.func;
             const lintResult = await this._lintCode(result.src_lint_copy);
             if (lintResult) {
+                this.agent.transcript?.record('code.lint.failure', {
+                    attempt: i + 1,
+                    code,
+                    lintResult
+                }, 'coder');
                 const message = 'Error: Code lint error:'+'\n'+lintResult+'\nPlease try again.';
                 console.warn("Linting error:"+'\n'+lintResult+'\n');
                 messages.push({ role: 'system', content: message });
@@ -86,9 +95,16 @@ export class Coder {
 
             try {
                 console.log('Executing code...');
+                const start = Date.now();
                 await executionModule.main(this.agent.bot);
 
                 const code_output = this.agent.actions.getBotOutputSummary();
+                this.agent.transcript?.record('code.execution.end', {
+                    attempt: i + 1,
+                    duration_ms: Date.now() - start,
+                    code,
+                    output: code_output
+                }, 'coder');
                 const summary = "Agent wrote this code: \n```" + this._sanitizeCode(code) + "```\nCode Output:\n" + code_output;
                 return summary;
             } catch (e) {
@@ -99,6 +115,12 @@ export class Coder {
                 console.warn('trying again...');
 
                 const code_output = this.agent.actions.getBotOutputSummary();
+                this.agent.transcript?.record('code.execution.failure', {
+                    attempt: i + 1,
+                    code,
+                    output: code_output,
+                    error: e?.message || String(e)
+                }, 'coder');
 
                 messages.push({
                     role: 'assistant',

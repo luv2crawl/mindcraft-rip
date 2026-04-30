@@ -24,6 +24,7 @@ export class History {
         this.summary_chunk_size = 5; 
         // chunking reduces expensive calls to promptMemSaving and appendFullHistory
         // and improves the quality of the memory summary
+        this.pending_summary = Promise.resolve();
     }
 
     getHistory() { // expects an Examples object
@@ -32,7 +33,24 @@ export class History {
 
     async summarizeMemories(turns) {
         console.log("Storing memories...");
-        this.memory = await this.agent.prompter.promptMemSaving(turns);
+        this.agent.transcript?.record('memory.summary.start', {
+            turn_count: turns?.length ?? 0
+        }, 'history');
+        const timeoutMs = settings.memory_summary_timeout_ms ?? 20000;
+        try {
+            this.memory = await this._withTimeout(
+                this.agent.prompter.promptMemSaving(turns),
+                timeoutMs,
+                `Memory summarization timed out after ${timeoutMs}ms.`
+            );
+        } catch (error) {
+            console.error('Failed to summarize memory:', error?.message || error);
+            this.agent.transcript?.record('memory.summary.failure', {
+                error: error?.message || String(error),
+                timeout_ms: timeoutMs
+            }, 'history');
+            return;
+        }
 
         if (this.memory.length > 500) {
             this.memory = this.memory.slice(0, 500);
@@ -40,6 +58,20 @@ export class History {
         }
 
         console.log("Memory updated to: ", this.memory);
+        this.agent.transcript?.record('memory.summary.end', {
+            memory: this.memory
+        }, 'history');
+    }
+
+    _withTimeout(promise, timeoutMs, timeoutMessage) {
+        if (!timeoutMs || timeoutMs < 1) {
+            return promise;
+        }
+        let timeout;
+        const timeoutPromise = new Promise((_, reject) => {
+            timeout = setTimeout(() => reject(new Error(timeoutMessage)), timeoutMs);
+        });
+        return Promise.race([promise, timeoutPromise]).finally(() => clearTimeout(timeout));
     }
 
     async appendFullHistory(to_store) {
@@ -74,7 +106,12 @@ export class History {
             while (this.turns.length > 0 && this.turns[0].role === 'assistant')
                 chunk.push(this.turns.shift()); // remove until turns starts with system/user message
 
-            await this.summarizeMemories(chunk);
+            this.pending_summary = this.pending_summary
+                .catch(() => {})
+                .then(() => this.summarizeMemories(chunk))
+                .catch((error) => {
+                    console.error('Memory summary queue failed:', error?.message || error);
+                });
             await this.appendFullHistory(chunk);
         }
     }
@@ -91,8 +128,17 @@ export class History {
             };
             writeFileSync(this.memory_fp, JSON.stringify(data, null, 2));
             console.log('Saved memory to:', this.memory_fp);
+            this.agent.transcript?.record('memory.save', {
+                path: this.memory_fp,
+                turn_count: this.turns.length,
+                has_self_prompt: data.self_prompt != null
+            }, 'history');
         } catch (error) {
             console.error('Failed to save history:', error);
+            this.agent.transcript?.record('memory.save.failure', {
+                path: this.memory_fp,
+                error: error?.message || String(error)
+            }, 'history');
             throw error;
         }
     }
@@ -107,9 +153,18 @@ export class History {
             this.memory = data.memory || '';
             this.turns = data.turns || [];
             console.log('Loaded memory:', this.memory);
+            this.agent.transcript?.record('memory.load', {
+                path: this.memory_fp,
+                turn_count: this.turns.length,
+                memory: this.memory
+            }, 'history');
             return data;
         } catch (error) {
             console.error('Failed to load history:', error);
+            this.agent.transcript?.record('memory.load.failure', {
+                path: this.memory_fp,
+                error: error?.message || String(error)
+            }, 'history');
             throw error;
         }
     }

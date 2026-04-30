@@ -211,20 +211,48 @@ function numParams(command) {
 
 export async function executeCommand(agent, message) {
     let parsed = parseCommandMessage(message);
-    if (typeof parsed === 'string')
+    if (typeof parsed === 'string') {
+        agent.transcript?.record('command.parse.failure', {
+            message,
+            error: parsed
+        }, 'commands');
         return parsed; //The command was incorrectly formatted or an invalid input was given.
+    }
     else {
         console.log('parsed command:', parsed);
+        agent.transcript?.record('command.parsed', parsed, 'commands');
         const command = getCommand(parsed.commandName);
         let numArgs = 0;
         if (parsed.args) {
             numArgs = parsed.args.length;
         }
-        if (numArgs !== numParams(command))
+        if (numArgs !== numParams(command)) {
+            agent.transcript?.record('command.validation.failure', {
+                commandName: parsed.commandName,
+                given: numArgs,
+                required: numParams(command)
+            }, 'commands');
             return `Command ${command.name} was given ${numArgs} args, but requires ${numParams(command)} args.`;
+        }
         else {
-            const result = await command.perform(agent, ...parsed.args);
-            return result;
+            const start = Date.now();
+            agent.transcript?.record('command.start', parsed, 'commands');
+            try {
+                const result = await command.perform(agent, ...parsed.args);
+                agent.transcript?.record('command.end', {
+                    commandName: parsed.commandName,
+                    duration_ms: Date.now() - start,
+                    result
+                }, 'commands');
+                return result;
+            } catch (error) {
+                agent.transcript?.record('command.failure', {
+                    commandName: parsed.commandName,
+                    duration_ms: Date.now() - start,
+                    error: error?.message || String(error)
+                }, 'commands');
+                throw error;
+            }
         }
     }
 }

@@ -2290,6 +2290,198 @@ const ORE_DROPS = {
     ancient_debris: ['ancient_debris'],
 };
 
+const MINING_PICKAXE_RANK = {
+    wooden_pickaxe: 1,
+    golden_pickaxe: 1,
+    stone_pickaxe: 2,
+    iron_pickaxe: 3,
+    diamond_pickaxe: 4,
+    netherite_pickaxe: 5,
+};
+
+const MINING_TIER_RANK = {
+    wooden: 1,
+    stone: 2,
+    iron: 3,
+    diamond: 4,
+    netherite: 5,
+};
+
+const MINING_PICKAXE_BY_TIER = {
+    wooden: 'wooden_pickaxe',
+    stone: 'stone_pickaxe',
+    iron: 'iron_pickaxe',
+    diamond: 'diamond_pickaxe',
+    netherite: 'netherite_pickaxe',
+};
+
+export function _countEligibleMiningPickaxes(inventory, minTier) {
+    const minRank = MINING_TIER_RANK[minTier] || 1;
+    let total = 0;
+    for (const [itemName, count] of Object.entries(inventory || {})) {
+        if ((MINING_PICKAXE_RANK[itemName] || 0) >= minRank) {
+            total += count;
+        }
+    }
+    return total;
+}
+
+function _countCraftableMiningPickaxes(inventory, targetPickaxe) {
+    if (targetPickaxe === 'iron_pickaxe') {
+        return Math.min(
+            Math.floor((inventory.iron_ingot || 0) / 3),
+            Math.floor((inventory.stick || 0) / 2),
+        );
+    }
+    if (targetPickaxe === 'stone_pickaxe') {
+        return Math.min(
+            Math.floor((inventory.cobblestone || 0) / 3),
+            Math.floor((inventory.stick || 0) / 2),
+        );
+    }
+    return 0;
+}
+
+export function _missingMiningSupplies(inventory, minTier, desiredPickaxes) {
+    const targetPickaxe = MINING_PICKAXE_BY_TIER[minTier] || 'stone_pickaxe';
+    const eligiblePickaxes = _countEligibleMiningPickaxes(inventory, minTier);
+    const craftablePickaxes = _countCraftableMiningPickaxes(inventory, targetPickaxe);
+    const missing = {};
+    const shortPickaxes = Math.max(0, desiredPickaxes - eligiblePickaxes - craftablePickaxes);
+    if (shortPickaxes > 0) {
+        if (targetPickaxe === 'iron_pickaxe') {
+            missing.iron_ingot = shortPickaxes * 3;
+            missing.stick = shortPickaxes * 2;
+        } else if (targetPickaxe === 'stone_pickaxe') {
+            missing.cobblestone = shortPickaxes * 3;
+            missing.stick = shortPickaxes * 2;
+        } else {
+            missing[targetPickaxe] = shortPickaxes;
+        }
+    }
+    if ((inventory.crafting_table || 0) < 1) missing.crafting_table = 1;
+    return missing;
+}
+
+export function getMiningHomeChestPosition(bot, memoryBank = null) {
+    if (memoryBank) {
+        const recalled = memoryBank.recallPlace('home_chest');
+        if (recalled) return { x: recalled[0], y: recalled[1], z: recalled[2], source: 'memory' };
+    }
+    const nearby = world.getNearestBlock(bot, 'chest', 32);
+    if (!nearby) return null;
+    return {
+        x: nearby.position.x,
+        y: nearby.position.y,
+        z: nearby.position.z,
+        source: 'nearby',
+    };
+}
+
+async function _takeMiningSupplyFromChest(bot, itemName, count) {
+    if (count <= 0) return;
+    try {
+        await takeFromChest(bot, itemName, count);
+    } catch (e) {
+        log(bot, `Could not take ${itemName} from home chest: ${e}.`);
+    }
+}
+
+async function _craftMiningPickaxesIfPossible(bot, minTier, desiredPickaxes) {
+    const targetPickaxe = MINING_PICKAXE_BY_TIER[minTier] || 'stone_pickaxe';
+    for (let i = 0; i < desiredPickaxes; i++) {
+        const inventory = world.getInventoryCounts(bot);
+        if (_countEligibleMiningPickaxes(inventory, minTier) >= desiredPickaxes) break;
+        if (targetPickaxe === 'iron_pickaxe') {
+            if ((inventory.iron_ingot || 0) < 3 || (inventory.stick || 0) < 2) break;
+        } else if (targetPickaxe === 'stone_pickaxe') {
+            if ((inventory.cobblestone || 0) < 3 || (inventory.stick || 0) < 2) break;
+        }
+        const crafted = await craftRecipe(bot, targetPickaxe, 1);
+        if (!crafted) break;
+    }
+}
+
+export async function prepareMiningSupplies(bot, oreName, chestPos) {
+    const oreInfo = getOreInfo(oreName);
+    if (!oreInfo) return false;
+    const targetY = getBestY(oreName, Math.floor(bot.entity.position.y));
+    const deepMining = typeof targetY === 'number' && targetY < 0;
+    const desiredPickaxes = deepMining || MINING_TIER_RANK[oreInfo.min_pickaxe] >= MINING_TIER_RANK.iron ? 3 : 2;
+    const minTier = oreInfo.min_pickaxe;
+
+    let inventory = world.getInventoryCounts(bot);
+    if (_countEligibleMiningPickaxes(inventory, minTier) >= desiredPickaxes && (inventory.crafting_table || 0) >= 1) {
+        log(bot, `mineOre: inventory supplies ready (${_countEligibleMiningPickaxes(inventory, minTier)} ${minTier}+ pickaxes, ${inventory.torch || 0} torches, ${inventory.stick || 0} sticks).`);
+        return true;
+    }
+
+    if (chestPos) {
+        await goToPositionChunked(bot, chestPos.x, chestPos.y, chestPos.z, 2);
+        inventory = world.getInventoryCounts(bot);
+        const missing = _missingMiningSupplies(inventory, minTier, desiredPickaxes);
+        const eligibleNames = Object.keys(MINING_PICKAXE_RANK)
+            .filter(name => (MINING_PICKAXE_RANK[name] || 0) >= (MINING_TIER_RANK[minTier] || 1))
+            .sort((a, b) => MINING_PICKAXE_RANK[a] - MINING_PICKAXE_RANK[b]);
+        let stillNeedPickaxes = Math.max(0, desiredPickaxes - _countEligibleMiningPickaxes(inventory, minTier));
+        for (const name of eligibleNames) {
+            if (stillNeedPickaxes <= 0) break;
+            await _takeMiningSupplyFromChest(bot, name, stillNeedPickaxes);
+            stillNeedPickaxes = Math.max(0, desiredPickaxes - _countEligibleMiningPickaxes(world.getInventoryCounts(bot), minTier));
+        }
+        for (const [itemName, count] of Object.entries(missing)) {
+            await _takeMiningSupplyFromChest(bot, itemName, count);
+        }
+        await _takeMiningSupplyFromChest(bot, 'stick', 16);
+        await _takeMiningSupplyFromChest(bot, 'torch', 32);
+        await _takeMiningSupplyFromChest(bot, 'coal', 8);
+    }
+
+    inventory = world.getInventoryCounts(bot);
+    if ((inventory.stick || 0) < 16 && (inventory.oak_planks || 0) >= 2) {
+        await craftRecipe(bot, 'stick', 4);
+    }
+    if ((inventory.torch || 0) < 32 && (inventory.coal || 0) > 0 && (inventory.stick || 0) > 0) {
+        await craftRecipe(bot, 'torch', 8);
+    }
+    await _craftMiningPickaxesIfPossible(bot, minTier, desiredPickaxes);
+
+    inventory = world.getInventoryCounts(bot);
+    const eligiblePickaxes = _countEligibleMiningPickaxes(inventory, minTier);
+    if (eligiblePickaxes < desiredPickaxes) {
+        const targetPickaxe = MINING_PICKAXE_BY_TIER[minTier] || `${minTier}_pickaxe`;
+        log(bot, `Need ${desiredPickaxes} ${minTier}+ pickaxes for a ${oreInfo.display} mining run; only have ${eligiblePickaxes}. Stock home_chest with ${targetPickaxe}s or the ingots/sticks to craft them.`);
+        return false;
+    }
+    if ((inventory.crafting_table || 0) < 1) {
+        log(bot, `Need a crafting_table before leaving to mine ${oreInfo.display}; stock one in home_chest or inventory.`);
+        return false;
+    }
+    log(bot, `mineOre: supplies ready (${eligiblePickaxes} ${minTier}+ pickaxes, ${inventory.torch || 0} torches, ${inventory.stick || 0} sticks).`);
+    return true;
+}
+
+export async function prepareMiningRun(bot, oreName, options = {}) {
+    const oreInfo = getOreInfo(oreName);
+    if (!oreInfo) {
+        log(bot, `Unknown ore: ${oreName}. Known: ${getKnownOres().join(', ')}.`);
+        return false;
+    }
+    const chestPos = getMiningHomeChestPosition(bot, options.memoryBank || null);
+    if (!chestPos) {
+        const desiredPickaxes = (getBestY(oreName, Math.floor(bot.entity.position.y)) || 0) < 0
+            || MINING_TIER_RANK[oreInfo.min_pickaxe] >= MINING_TIER_RANK.iron ? 3 : 2;
+        log(bot, `Before traveling to mine ${oreInfo.display}, set a home_chest and stock supplies there or in inventory. Need ${desiredPickaxes} ${oreInfo.min_pickaxe}+ pickaxes and a crafting_table.`);
+        return false;
+    }
+    if (chestPos.source === 'nearby') {
+        log(bot, `No home_chest saved; checking nearest chest at (${chestPos.x}, ${chestPos.y}, ${chestPos.z}) for mining supplies.`);
+    } else {
+        log(bot, `Checking home_chest at (${chestPos.x}, ${chestPos.y}, ${chestPos.z}) for mining supplies.`);
+    }
+    return await prepareMiningSupplies(bot, oreName, chestPos);
+}
+
 export function _directionToVec(direction) {
     switch ((direction || 'south').toLowerCase()) {
         case 'north': return { x: 0, z: -1, label: 'north' };
@@ -2547,30 +2739,43 @@ export async function mineOreAt(bot, oreName, num, options = {}) {
         return false;
     }
 
+    // Determine deposit chest.
+    const memBank = options.memoryBank;
+    let chestPos = getMiningHomeChestPosition(bot, memBank);
+    if (!chestPos) {
+        log(bot, `No home_chest set and no chest within 32 blocks. Use !rememberHere("home_chest") next to a chest first.`);
+        return false;
+    }
+    if (chestPos.source === 'nearby') {
+        log(bot, `No home_chest saved; using nearest chest at (${chestPos.x}, ${chestPos.y}, ${chestPos.z}) for this run.`);
+    } else {
+        log(bot, `mineOre: home_chest at (${chestPos.x}, ${chestPos.y}, ${chestPos.z}).`);
+    }
+
+    const requestedEntry = {
+        x: Math.floor(bot.entity.position.x),
+        y: Math.floor(bot.entity.position.y),
+        z: Math.floor(bot.entity.position.z),
+    };
+    const suppliesReady = await prepareMiningSupplies(bot, oreName, chestPos);
+    if (!suppliesReady) {
+        return false;
+    }
     const pickCheck = botHasRequiredPickaxe(bot, oreName);
     if (!pickCheck.ok) {
         log(bot, `Need a ${pickCheck.needs} pickaxe to mine ${oreInfo.display}; you have ${pickCheck.has || 'none'}.`);
         return false;
     }
     log(bot, `mineOre: pickaxe check ok (have ${pickCheck.has}, needs ${pickCheck.needs}).`);
-
-    // Determine deposit chest.
-    let chestPos = null;
-    const memBank = options.memoryBank;
-    if (memBank) {
-        const recalled = memBank.recallPlace('home_chest');
-        if (recalled) chestPos = { x: recalled[0], y: recalled[1], z: recalled[2] };
-    }
-    if (!chestPos) {
-        const nearby = world.getNearestBlock(bot, 'chest', 32);
-        if (!nearby) {
-            log(bot, `No home_chest set and no chest within 32 blocks. Use !rememberHere("home_chest") next to a chest first.`);
+    if (Math.floor(bot.entity.position.x) !== requestedEntry.x
+        || Math.floor(bot.entity.position.y) !== requestedEntry.y
+        || Math.floor(bot.entity.position.z) !== requestedEntry.z) {
+        log(bot, `mineOre: returning to requested mining start at (${requestedEntry.x}, ${requestedEntry.y}, ${requestedEntry.z}) after supply prep.`);
+        const returned = await goToPositionChunked(bot, requestedEntry.x, requestedEntry.y, requestedEntry.z, 2);
+        if (!returned) {
+            log(bot, `Could not return to requested mining start after preparing supplies; stopping before digging in the wrong place.`);
             return false;
         }
-        chestPos = { x: nearby.position.x, y: nearby.position.y, z: nearby.position.z };
-        log(bot, `No home_chest saved; using nearest chest at (${chestPos.x}, ${chestPos.y}, ${chestPos.z}) for this run.`);
-    } else {
-        log(bot, `mineOre: home_chest at (${chestPos.x}, ${chestPos.y}, ${chestPos.z}).`);
     }
 
     // Save the mining entry so deposit cycles can return.

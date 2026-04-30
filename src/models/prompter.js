@@ -224,6 +224,14 @@ export class Prompter {
             let prompt = this.profile.conversing;
             prompt = await this.replaceStrings(prompt, messages, this.convo_examples);
             let generation;
+            const start = Date.now();
+            this.agent.transcript?.record('model.request', {
+                kind: 'conversation',
+                attempt: i + 1,
+                model: this.chat_model?.model_name,
+                message_count: messages?.length ?? 0,
+                prompt
+            }, 'prompter');
 
             try {
                 generation = await this.chat_model.sendRequest(messages, prompt);
@@ -233,20 +241,42 @@ export class Prompter {
                 }
                 console.log("Generated response:", generation);
                 await this._saveLog(prompt, messages, generation, 'conversation');
+                this.agent.transcript?.record('model.response', {
+                    kind: 'conversation',
+                    attempt: i + 1,
+                    duration_ms: Date.now() - start,
+                    response: generation
+                }, 'prompter');
 
             } catch (error) {
                 console.error('Error during message generation or file writing:', error);
+                this.agent.transcript?.record('model.failure', {
+                    kind: 'conversation',
+                    attempt: i + 1,
+                    duration_ms: Date.now() - start,
+                    error: error?.message || String(error)
+                }, 'prompter');
                 continue;
             }
 
             // Check for hallucination or invalid output
             if (generation?.includes('(FROM OTHER BOT)')) {
                 console.warn('LLM hallucinated message as another bot. Trying again...');
+                this.agent.transcript?.record('model.discarded', {
+                    kind: 'conversation',
+                    reason: 'hallucinated_other_bot',
+                    response: generation
+                }, 'prompter');
                 continue;
             }
 
             if (current_msg_time !== this.most_recent_msg_time) {
                 console.warn(`${this.agent.name} received new message while generating, discarding old response.`);
+                this.agent.transcript?.record('model.discarded', {
+                    kind: 'conversation',
+                    reason: 'newer_message_received',
+                    response: generation
+                }, 'prompter');
                 return '';
             }
 
@@ -271,18 +301,52 @@ export class Prompter {
         let prompt = this.profile.coding;
         prompt = await this.replaceStrings(prompt, messages, this.coding_examples);
 
-        let resp = await this.code_model.sendRequest(messages, prompt);
-        this.awaiting_coding = false;
-        await this._saveLog(prompt, messages, resp, 'coding');
-        return resp;
+        const start = Date.now();
+        this.agent.transcript?.record('model.request', {
+            kind: 'coding',
+            model: this.code_model?.model_name,
+            message_count: messages?.length ?? 0,
+            prompt
+        }, 'prompter');
+        try {
+            let resp = await this.code_model.sendRequest(messages, prompt);
+            await this._saveLog(prompt, messages, resp, 'coding');
+            this.agent.transcript?.record('model.response', {
+                kind: 'coding',
+                duration_ms: Date.now() - start,
+                response: resp
+            }, 'prompter');
+            return resp;
+        } catch (error) {
+            this.agent.transcript?.record('model.failure', {
+                kind: 'coding',
+                duration_ms: Date.now() - start,
+                error: error?.message || String(error)
+            }, 'prompter');
+            throw error;
+        } finally {
+            this.awaiting_coding = false;
+        }
     }
 
     async promptMemSaving(to_summarize) {
         await this.checkCooldown();
         let prompt = this.profile.saving_memory;
         prompt = await this.replaceStrings(prompt, null, null, to_summarize);
+        const start = Date.now();
+        this.agent.transcript?.record('model.request', {
+            kind: 'memory',
+            model: this.chat_model?.model_name,
+            message_count: to_summarize?.length ?? 0,
+            prompt
+        }, 'prompter');
         let resp = await this.chat_model.sendRequest([], prompt);
         await this._saveLog(prompt, to_summarize, resp, 'memSaving');
+        this.agent.transcript?.record('model.response', {
+            kind: 'memory',
+            duration_ms: Date.now() - start,
+            response: resp
+        }, 'prompter');
         if (resp?.includes('</think>')) {
             const [_, afterThink] = resp.split('</think>')
             resp = afterThink;
@@ -296,7 +360,19 @@ export class Prompter {
         let messages = this.agent.history.getHistory();
         messages.push({role: 'user', content: new_message});
         prompt = await this.replaceStrings(prompt, null, null, messages);
+        const start = Date.now();
+        this.agent.transcript?.record('model.request', {
+            kind: 'bot_responder',
+            model: this.chat_model?.model_name,
+            message_count: messages.length,
+            prompt
+        }, 'prompter');
         let res = await this.chat_model.sendRequest([], prompt);
+        this.agent.transcript?.record('model.response', {
+            kind: 'bot_responder',
+            duration_ms: Date.now() - start,
+            response: res
+        }, 'prompter');
         return res.trim().toLowerCase() === 'respond';
     }
 
@@ -304,7 +380,21 @@ export class Prompter {
         await this.checkCooldown();
         let prompt = this.profile.image_analysis;
         prompt = await this.replaceStrings(prompt, messages, null, null, null);
-        return await this.vision_model.sendVisionRequest(messages, prompt, imageBuffer);
+        const start = Date.now();
+        this.agent.transcript?.record('model.request', {
+            kind: 'vision',
+            model: this.vision_model?.model_name,
+            message_count: messages?.length ?? 0,
+            image_bytes: imageBuffer?.length,
+            prompt
+        }, 'prompter');
+        const res = await this.vision_model.sendVisionRequest(messages, prompt, imageBuffer);
+        this.agent.transcript?.record('model.response', {
+            kind: 'vision',
+            duration_ms: Date.now() - start,
+            response: res
+        }, 'prompter');
+        return res;
     }
 
     async promptGoalSetting(messages, last_goals) {

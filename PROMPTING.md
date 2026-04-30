@@ -128,7 +128,8 @@ Generated from `actionsList` and `queryList` (see `src/agent/commands/`). Catego
 | Command | What it does |
 |---|---|
 | `!collectBlocks(type, num)` | Greedy nearest-block collection (no pattern, no torches). Useful for surface stuff like wood, dirt, stone. |
-| `!mineOre(ore_name, num)` | Branch-mine for a specific ore at its best Y. Validates pickaxe tier, places torches every 6 blocks, returns to `home_chest` when full, resumes. **Requires `home_chest` to be set first.** |
+| `!prepareMiningRun(ore_name)` | Before walking to a mining site, check/pull/craft needed mining supplies from inventory or `home_chest`. Use this first when a mining request may require travel. |
+| `!mineOre(ore_name, num)` | Branch-mine for a specific ore at its best Y. Prepares supplies, validates pickaxe tier, places torches every 6 blocks, returns to `home_chest` when full, resumes. **Requires `home_chest` to be set first.** |
 | `!digDown(distance)` | Dig straight down with safety checks (stops at lava/water/long fall). Use sparingly. |
 | `!goToSurface` | Walk straight up to the highest non-air block at current X/Z. |
 
@@ -201,9 +202,12 @@ If `allow_vision: true` in `settings.js`, the bot can describe what it sees:
 ```
 (stand next to a chest)
 !setHomeChest
+!prepareMiningRun("iron")
 (walk over to where you want to start the mine)
 !mineOre("iron", 64)
 ```
+
+Before traveling, the bot checks `home_chest`/inventory for enough pickaxes, a crafting table, and basic supplies. If supplies are missing, it should stop and report what the user needs to stock instead of walking to the mining site unprepared.
 
 The bot will: validate it has at least a stone pickaxe → save `mining_entry` at the start position → descend to Y≈16 (the closer of iron's two best-Y values to the surface) → branch-mine south, scanning walls/floor/ceiling for iron ore at every step → place a torch every 6 steps → when ≤2 inventory slots are free, walk back to `home_chest`, deposit raw iron and spoil blocks (cobblestone, deepslate, dirt, etc.), and return to `mining_entry` to resume → stop when 64 raw iron is on hand.
 

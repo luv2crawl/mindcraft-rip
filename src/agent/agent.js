@@ -17,6 +17,7 @@ import settings from './settings.js';
 import { Task } from './tasks/tasks.js';
 import { speak } from './speak.js';
 import { log, validateNameFormat, handleDisconnection } from './connection_handler.js';
+import { TranscriptLogger } from './transcript_logger.js';
 
 export class Agent {
     async start(load_mem=false, init_message=null, count_id=0) {
@@ -28,6 +29,14 @@ export class Agent {
         this.actions = new ActionManager(this);
         this.prompter = new Prompter(this, settings.profile);
         this.name = (this.prompter.getName() || '').trim();
+        this.transcript = new TranscriptLogger(this.name || 'unknown');
+        this.transcript.record('agent.start', {
+            load_mem,
+            init_message,
+            count_id,
+            profile_name: settings.profile?.name,
+            model: settings.profile?.model
+        }, 'agent');
         console.log(`Initializing agent ${this.name}...`);
         
         // Validate Name Format
@@ -73,6 +82,11 @@ export class Agent {
             // Log and Analyze
             // handleDisconnection handles logging to console and server
             const { type } = handleDisconnection(this.name, reason);
+            this.transcript?.record('agent.disconnect', {
+                event,
+                type,
+                reason
+            }, 'agent');
      
             process.exit(1);
         };
@@ -92,6 +106,7 @@ export class Agent {
 
         this.bot.on('login', () => {
             console.log(this.name, 'logged in!');
+            this.transcript?.record('agent.login', {}, 'agent');
             serverProxy.login();
             
             // Set skin for profile, requires Fabric Tailor. (https://modrinth.com/mod/fabrictailor)
@@ -117,6 +132,11 @@ export class Agent {
                 await new Promise((resolve) => setTimeout(resolve, 1000));
                 
                 console.log(`${this.name} spawned.`);
+                this.transcript?.record('agent.spawn', {
+                    load_mem,
+                    init_message,
+                    count_id
+                }, 'agent');
                 this.clearBotLogs();
               
                 this._setupEventHandlers(save_data, init_message);
@@ -164,12 +184,21 @@ export class Agent {
                 this.shut_up = false;
 
                 console.log(this.name, 'received message from', username, ':', message);
+                this.transcript?.record('message.inbound.raw', {
+                    source: username,
+                    message
+                }, 'agent');
 
                 if (convoManager.isOtherAgent(username)) {
                     console.warn('received whisper from other bot??')
                 }
                 else {
                     let translation = await handleEnglishTranslation(message);
+                    this.transcript?.record('message.inbound.translated', {
+                        source: username,
+                        original: message,
+                        message: translation
+                    }, 'agent');
                     this.handleMessage(username, translation);
                 }
             } catch (error) {
@@ -257,6 +286,11 @@ export class Agent {
             console.warn('Received empty message from', source);
             return false;
         }
+        this.transcript?.record('message.handle.start', {
+            source,
+            message,
+            max_responses
+        }, 'agent');
 
         let used_command = false;
         if (max_responses === null) {
@@ -285,6 +319,11 @@ export class Agent {
                 let execute_res = await executeCommand(this, message);
                 if (execute_res) 
                     this.routeResponse(source, execute_res);
+                this.transcript?.record('message.handle.end', {
+                    source,
+                    used_command: true,
+                    forced_command: user_command_name
+                }, 'agent');
                 return true;
             }
         }
@@ -295,6 +334,12 @@ export class Agent {
         // Now translate the message
         message = await handleEnglishTranslation(message);
         console.log('received message from', source, ':', message);
+        this.transcript?.record('message.prompt.input', {
+            source,
+            message,
+            self_prompt,
+            from_other_bot
+        }, 'agent');
 
         const checkInterrupt = () => this.self_prompter.shouldInterrupt(self_prompt) || this.shut_up || convoManager.responseScheduledFor(source);
         
@@ -323,6 +368,9 @@ export class Agent {
 
             if (res.trim().length === 0) {
                 console.warn('no response')
+                this.transcript?.record('message.no_response', {
+                    source
+                }, 'agent');
                 break; // empty response ends loop
             }
 
@@ -335,6 +383,10 @@ export class Agent {
                 if (!commandExists(command_name)) {
                     this.history.add('system', `Command ${command_name} does not exist.`);
                     console.warn('Agent hallucinated command:', command_name)
+                    this.transcript?.record('command.hallucinated', {
+                        command_name,
+                        response: res
+                    }, 'agent');
                     continue;
                 }
 
@@ -378,6 +430,10 @@ export class Agent {
             this.history.save();
         }
 
+        this.transcript?.record('message.handle.end', {
+            source,
+            used_command
+        }, 'agent');
         return used_command;
     }
 
@@ -402,6 +458,7 @@ export class Agent {
     }
 
     async openChat(message) {
+        const originalMessage = message;
         let to_translate = message;
         let remaining = '';
         let command_name = containsCommand(message);
@@ -418,6 +475,13 @@ export class Agent {
             for (let username of settings.only_chat_with) {
                 this.bot.whisper(username, message);
             }
+            this.transcript?.record('message.outbound', {
+                original: originalMessage,
+                translated: message,
+                recipients: settings.only_chat_with,
+                chat_ingame: false,
+                speak: false
+            }, 'agent');
         }
         else {
             if (settings.speak) {
@@ -425,6 +489,12 @@ export class Agent {
             }
             if (settings.chat_ingame) {this.bot.chat(message);}
             sendOutputToServer(this.name, message);
+            this.transcript?.record('message.outbound', {
+                original: originalMessage,
+                translated: message,
+                chat_ingame: settings.chat_ingame,
+                speak: settings.speak
+            }, 'agent');
         }
     }
 
@@ -532,6 +602,10 @@ export class Agent {
         this.history.add('system', msg);
         this.bot.chat(code > 1 ? 'Restarting.': 'Exiting.');
         this.history.save();
+        this.transcript?.record('agent.clean_kill', {
+            msg,
+            code
+        }, 'agent');
         process.exit(code);
     }
     async checkTaskDone() {
@@ -542,6 +616,7 @@ export class Agent {
                 await this.history.save();
                 // await new Promise(resolve => setTimeout(resolve, 3000)); // Wait 3 second for save to complete
                 console.log('Task finished:', res.message);
+                this.transcript?.record('task.finished', res, 'agent');
                 this.killAll();
             }
         }
