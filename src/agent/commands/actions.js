@@ -1,7 +1,9 @@
 import * as skills from '../library/skills.js';
+import * as world from '../library/world.js';
 import settings from '../settings.js';
 import convoManager from '../conversation.js';
 import { runMiningObjective } from '../objectives/mining_objective.js';
+import { objectiveResult, formatObjectiveResult } from '../objectives/objective_results.js';
 
 
 function runAsAction (actionFn, resume = false, timeout = -1) {
@@ -360,7 +362,21 @@ export const actionsList = [
         perform: async function (agent) {
             const chest = skills.getNearestStoragePosition(agent.bot, 16);
             if (!chest) {
-                return 'No chest within 16 blocks. Stand next to a chest first.';
+                const wider = skills.getNearestStoragePosition(agent.bot, 64);
+                const data = wider
+                    ? { nearest_chest_at: `(${wider.x}, ${wider.y}, ${wider.z})`, nearest_chest_distance: Math.round(Math.hypot(wider.x - agent.bot.entity.position.x, wider.y - agent.bot.entity.position.y, wider.z - agent.bot.entity.position.z)) }
+                    : {};
+                const recommended = wider
+                    ? [`!goToCoordinates(${wider.x}, ${wider.y}, ${wider.z}, 1)`, '!setHomeChest']
+                    : ['!searchForBlock("chest", 64)'];
+                return formatObjectiveResult(objectiveResult({
+                    ok: false,
+                    reason: 'no_chest_in_range',
+                    message: 'No chest within 16 blocks. Stand adjacent to a chest before saving home_chest.',
+                    missing: { chest_within_16_blocks: 1 },
+                    recommendedCommands: recommended,
+                    data,
+                }));
             }
             agent.memory_bank.rememberPlace('home_chest', chest.x, chest.y, chest.z);
             return `Home chest saved at (${chest.x}, ${chest.y}, ${chest.z}).`;

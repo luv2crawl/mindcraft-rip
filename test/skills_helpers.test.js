@@ -5,6 +5,7 @@ import {
     _directionToVec,
     _computePathfindTimeout,
     _goalApproxDistance,
+    _isStandingInBlockCell,
     _isPassableForCorridor,
     _isHazardousFluid,
     _countEligibleMiningPickaxes,
@@ -14,6 +15,7 @@ import {
     getMiningHomeChestPosition,
     getNearestStoragePosition,
 } from '../src/agent/library/skills.js';
+import { objectiveResult, formatObjectiveResult } from '../src/agent/objectives/objective_results.js';
 import settings from '../settings.js';
 
 describe('_directionToVec', () => {
@@ -101,6 +103,12 @@ describe('_isPassableForCorridor', () => {
     test('air is passable', () => {
         assert.equal(_isPassableForCorridor({ name: 'air' }), true);
     });
+    test('cave_air and void_air are passable (mining adjacent to caves)', () => {
+        // Naturally generated cave openings carry cave_air; the previous check
+        // rejected these and aborted the corridor with "blocked".
+        assert.equal(_isPassableForCorridor({ name: 'cave_air' }), true);
+        assert.equal(_isPassableForCorridor({ name: 'void_air' }), true);
+    });
     test('null/undefined block (unloaded chunk) is passable', () => {
         assert.equal(_isPassableForCorridor(null), true);
         assert.equal(_isPassableForCorridor(undefined), true);
@@ -132,6 +140,15 @@ describe('_isHazardousFluid', () => {
     test('null block is not hazardous', () => {
         assert.equal(_isHazardousFluid(null), false);
         assert.equal(_isHazardousFluid(undefined), false);
+    });
+});
+
+describe('_isStandingInBlockCell', () => {
+    test('requires the bot to actually occupy the target block cell', () => {
+        assert.equal(_isStandingInBlockCell(new Vec3(10.5, 64, -3.5), 10, 64, -4), true);
+        assert.equal(_isStandingInBlockCell(new Vec3(10.99, 64.1, -3.01), 10, 64, -4), true);
+        assert.equal(_isStandingInBlockCell(new Vec3(9.99, 64, -3.5), 10, 64, -4), false);
+        assert.equal(_isStandingInBlockCell(new Vec3(10.5, 65, -3.5), 10, 64, -4), false);
     });
 });
 
@@ -289,5 +306,47 @@ describe('chest content formatting', () => {
         assert.match(formatted, /iron_pickaxe: 2 \(2 stacks\)/);
         assert.match(formatted, /raw_iron: 7 \(1 stack\)/);
         assert.doesNotMatch(formatted, /64 raw_copper\n/);
+    });
+});
+
+describe('formatObjectiveResult — model-facing failure shape', () => {
+    test('failure with missing/have/recommended renders all sections', () => {
+        const out = formatObjectiveResult(objectiveResult({
+            ok: false,
+            reason: 'missing_ingredients',
+            message: 'Cannot craft stone_pickaxe: missing ingredients.',
+            need: { cobblestone: 3, stick: 2 },
+            have: { cobblestone: 2, stick: 14 },
+            missing: { cobblestone: 1 },
+            recommendedCommands: ['!collectBlocks("cobblestone", 1)'],
+        }));
+        assert.match(out, /^FAILED: missing_ingredients/);
+        assert.match(out, /Cannot craft stone_pickaxe/);
+        assert.match(out, /Need: cobblestone x3, stick x2/);
+        assert.match(out, /Have: cobblestone x2, stick x14/);
+        assert.match(out, /Missing: cobblestone x1/);
+        assert.match(out, /Recommended: !collectBlocks\("cobblestone", 1\)/);
+    });
+    test('omits empty sections so trivial failures stay short', () => {
+        const out = formatObjectiveResult(objectiveResult({
+            ok: false,
+            reason: 'no_chest_in_range',
+            message: 'No chest within 16 blocks.',
+            missing: { chest_within_16_blocks: 1 },
+            recommendedCommands: ['!searchForBlock("chest", 64)'],
+        }));
+        assert.doesNotMatch(out, /\bNeed:/);
+        assert.doesNotMatch(out, /\bHave:/);
+        assert.match(out, /Missing: chest_within_16_blocks x1/);
+        assert.match(out, /Recommended: !searchForBlock/);
+    });
+    test('chains multiple recommended commands with " then "', () => {
+        const out = formatObjectiveResult(objectiveResult({
+            ok: false,
+            reason: 'no_chest_in_range',
+            message: 'No chest within 16 blocks.',
+            recommendedCommands: ['!goToCoordinates(10, 64, -3, 1)', '!setHomeChest'],
+        }));
+        assert.match(out, /Recommended: !goToCoordinates\(10, 64, -3, 1\) then !setHomeChest/);
     });
 });

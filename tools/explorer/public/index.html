@@ -1,0 +1,172 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mindcraft Bot Explorer</title>
+  <link rel="stylesheet" href="/styles.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark">M</span>
+      <div>
+        <h1>Mindcraft Bot Explorer</h1>
+        <div class="brand-sub">Repo review · System diagram · Research · Planning</div>
+      </div>
+    </div>
+    <nav class="tabs" role="tablist">
+      <button class="tab active" data-tab="flow">Flow</button>
+      <button class="tab"        data-tab="research">Research</button>
+      <button class="tab"        data-tab="plans">Plans</button>
+      <button class="tab"        data-tab="drift">Doc drift</button>
+    </nav>
+    <div class="repo-info" id="repoInfo">…</div>
+  </header>
+
+  <main>
+    <!-- ============ FLOW TAB ============ -->
+    <section id="tab-flow" class="tab-panel active">
+      <div class="flow-layout">
+        <div class="diagram-wrap">
+          <div class="panel-title">Prompt → Action loop</div>
+          <div id="diagram" class="mermaid">flowchart LR\n  loading[loading…]</div>
+          <div class="diagram-help">Click a stage card below to inspect its source files. Numbers in the diagram match the cards.</div>
+        </div>
+        <div class="stages-wrap">
+          <div class="panel-title">Stages</div>
+          <div id="stageGrid" class="stage-grid"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ============ RESEARCH TAB ============ -->
+    <section id="tab-research" class="tab-panel">
+      <div class="research-layout">
+        <aside class="research-nav" id="researchNav"></aside>
+        <div class="research-body" id="researchBody"></div>
+      </div>
+    </section>
+
+    <!-- ============ PLANS TAB ============ -->
+    <section id="tab-plans" class="tab-panel">
+      <div class="plans-toolbar">
+        <button id="addCard" class="btn primary">+ New card</button>
+        <span class="plans-hint">Drop research recommendations into Backlog from the Research tab. Cards persist to <code>tools/explorer/data/plans.json</code>.</span>
+        <span class="plans-status" id="plansStatus"></span>
+      </div>
+      <div class="kanban" id="kanban">
+        <div class="column" data-status="backlog"><h3>Backlog</h3><div class="cards"></div></div>
+        <div class="column" data-status="planned"><h3>Planned</h3><div class="cards"></div></div>
+        <div class="column" data-status="inprogress"><h3>In progress</h3><div class="cards"></div></div>
+        <div class="column" data-status="done"><h3>Done</h3><div class="cards"></div></div>
+      </div>
+    </section>
+
+    <!-- ============ DOC DRIFT TAB ============ -->
+    <section id="tab-drift" class="tab-panel">
+      <div class="drift-wrap">
+        <div class="panel-title">Drift between <code>docs/bot-flow.md</code> and the live source</div>
+        <p class="drift-help">Items the explorer noticed when grounding each stage in code. Treat these as small docs-PRs to write up next time you touch the relevant area.</p>
+        <ul id="driftList" class="drift-list"></ul>
+      </div>
+    </section>
+  </main>
+
+  <!-- ============ STAGE DETAIL DRAWER ============ -->
+  <aside id="stageDrawer" class="drawer" aria-hidden="true">
+    <div class="drawer-head">
+      <div>
+        <div class="drawer-eyebrow" id="drawerEyebrow">Stage</div>
+        <h2 id="drawerTitle">…</h2>
+        <div class="drawer-tagline" id="drawerTagline"></div>
+      </div>
+      <button id="drawerClose" class="icon-btn" aria-label="Close">×</button>
+    </div>
+    <div class="drawer-body">
+      <section>
+        <h3>Source files</h3>
+        <ul id="drawerFiles" class="file-list"></ul>
+      </section>
+      <section>
+        <h3>Notes &amp; pain points</h3>
+        <ul id="drawerNotes" class="bullet-list"></ul>
+      </section>
+      <section>
+        <h3>Improvement themes that touch this stage</h3>
+        <div id="drawerThemes" class="chip-row"></div>
+      </section>
+      <section>
+        <h3>My notes</h3>
+        <textarea id="drawerNoteText" placeholder="Jot ideas, file links, TODOs…"></textarea>
+        <div class="note-row">
+          <button class="btn" id="drawerNoteSave">Save note</button>
+          <button class="btn ghost" id="drawerNoteToCard">Send to Plans →</button>
+          <span class="note-status" id="drawerNoteStatus"></span>
+        </div>
+      </section>
+    </div>
+  </aside>
+
+  <!-- ============ SOURCE VIEWER MODAL ============ -->
+  <div id="sourceModal" class="modal" aria-hidden="true">
+    <div class="modal-card">
+      <div class="modal-head">
+        <div>
+          <div class="modal-eyebrow" id="sourceLabel">file</div>
+          <div class="modal-meta" id="sourceMeta"></div>
+        </div>
+        <button id="sourceClose" class="icon-btn" aria-label="Close">×</button>
+      </div>
+      <pre id="sourceCode" class="source-code"><code>loading…</code></pre>
+    </div>
+  </div>
+
+  <!-- ============ CARD EDITOR MODAL ============ -->
+  <div id="cardModal" class="modal" aria-hidden="true">
+    <div class="modal-card narrow">
+      <div class="modal-head">
+        <div>
+          <div class="modal-eyebrow">Plan card</div>
+          <div class="modal-meta" id="cardModalMeta"></div>
+        </div>
+        <button id="cardClose" class="icon-btn" aria-label="Close">×</button>
+      </div>
+      <div class="modal-body">
+        <label>Title<input id="cardTitle" type="text" maxlength="200" /></label>
+        <label>Status
+          <select id="cardStatus">
+            <option value="backlog">Backlog</option>
+            <option value="planned">Planned</option>
+            <option value="inprogress">In progress</option>
+            <option value="done">Done</option>
+          </select>
+        </label>
+        <label>Tags (comma-separated)<input id="cardTags" type="text" placeholder="prompter, eval, quick-win" /></label>
+        <label>Body / acceptance criteria
+          <textarea id="cardBody" rows="10"></textarea>
+        </label>
+        <div class="modal-actions">
+          <button class="btn danger ghost" id="cardDelete">Delete</button>
+          <span class="spacer"></span>
+          <button class="btn ghost" id="cardCancel">Cancel</button>
+          <button class="btn primary" id="cardSave">Save</button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Mermaid for the diagram. Loaded as ESM from CDN. -->
+  <script type="module">
+    import mermaid from 'https://cdn.jsdelivr.net/npm/mermaid@11/dist/mermaid.esm.min.mjs';
+    window.__mermaid = mermaid;
+    mermaid.initialize({
+      startOnLoad: false,
+      theme: 'dark',
+      securityLevel: 'loose',
+      flowchart: { htmlLabels: true, curve: 'basis' }
+    });
+  </script>
+  <script src="/app.js" type="module"></script>
+</body>
+</html>

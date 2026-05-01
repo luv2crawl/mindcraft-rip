@@ -61,6 +61,7 @@ export class ActionManager {
     async _executeAction(actionLabel, actionFn, timeout = 10) {
         let TIMEOUT;
         try {
+            this.timedout = false;
             if (this.last_action_time > 0) {
                 let time_diff = Date.now() - this.last_action_time;
                 if (time_diff < 20) {
@@ -119,6 +120,7 @@ export class ActionManager {
             let output = this.getBotOutputSummary();
             let interrupted = this.agent.bot.interrupt_code;
             let timedout = this.timedout;
+            this.timedout = false;
             this.agent.clearBotLogs();
 
             // if not interrupted and not generating, emit idle event
@@ -154,6 +156,7 @@ export class ActionManager {
 
             let interrupted = this.agent.bot.interrupt_code;
             this.agent.clearBotLogs();
+            this.timedout = false;
             if (!interrupted) {
                 this.agent.bot.emit('idle');
             }

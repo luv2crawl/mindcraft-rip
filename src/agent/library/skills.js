@@ -123,12 +123,17 @@ export async function craftRecipe(bot, itemName, num=1) {
     let placedTable = false;
 
     if (mc.getItemCraftingRecipes(itemName).length == 0) {
-        log(bot, `${itemName} is either not an item, or it does not have a crafting recipe!`);
+        log(bot, formatObjectiveResult(objectiveResult({
+            ok: false,
+            reason: 'unknown_recipe',
+            message: `Cannot craft ${itemName}: not an item or no recipe exists.`,
+            data: { item: itemName },
+        })));
         return false;
     }
 
     // get recipes that don't require a crafting table
-    let recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, null); 
+    let recipes = bot.recipesFor(mc.getItemId(itemName), null, 1, null);
     let craftingTable = null;
     const craftingTableRange = 16;
     placeTable: if (!recipes || recipes.length === 0) {
@@ -151,7 +156,14 @@ export async function craftRecipe(bot, itemName, num=1) {
                 }
             }
             else {
-                log(bot, `Crafting ${itemName} requires a crafting table.`);
+                log(bot, formatObjectiveResult(objectiveResult({
+                    ok: false,
+                    reason: 'missing_crafting_table',
+                    message: `Cannot craft ${itemName}: needs a crafting table within ${craftingTableRange} blocks and none in inventory.`,
+                    have: world.getInventoryCounts(bot),
+                    missing: { crafting_table: 1 },
+                    recommendedCommands: ['!craftRecipe("crafting_table", 1)'],
+                })));
                 return false;
             }
         }
@@ -160,7 +172,32 @@ export async function craftRecipe(bot, itemName, num=1) {
         }
     }
     if (!recipes || recipes.length === 0) {
-        log(bot, `You do not have the resources to craft a ${itemName}. It requires: ${Object.entries(mc.getItemCraftingRecipes(itemName)[0][0]).map(([key, value]) => `${key}: ${value}`).join(', ')}.`);
+        const inventory = world.getInventoryCounts(bot);
+        const recipeOptions = mc.getItemCraftingRecipes(itemName) || [];
+        // Pick the recipe whose missing-cost is smallest given current inventory.
+        let best = null;
+        for (const option of recipeOptions) {
+            const required = option[0] || {};
+            const missing = {};
+            for (const [ing, count] of Object.entries(required)) {
+                const have = inventory[ing] || 0;
+                if (have < count) missing[ing] = count - have;
+            }
+            const totalMissing = Object.values(missing).reduce((a, b) => a + b, 0);
+            if (!best || totalMissing < best.totalMissing) best = { required, missing, totalMissing };
+        }
+        const required = best?.required || {};
+        const missing = best?.missing || {};
+        const recommendedCommands = Object.entries(missing).map(([ing, count]) => `!collectBlocks("${ing}", ${count})`);
+        log(bot, formatObjectiveResult(objectiveResult({
+            ok: false,
+            reason: 'missing_ingredients',
+            message: `Cannot craft ${itemName}: missing ingredients.`,
+            need: required,
+            have: _filterPositiveCounts(Object.fromEntries(Object.keys(required).map(k => [k, inventory[k] || 0]))),
+            missing,
+            recommendedCommands,
+        })));
         if (placedTable) {
             await collectBlock(bot, 'crafting_table', 1);
         }
@@ -179,7 +216,21 @@ export async function craftRecipe(bot, itemName, num=1) {
     const craftLimit = mc.calculateLimitingResource(inventory, requiredIngredients);
     
     await bot.craft(recipe, Math.min(craftLimit.num, num), craftingTable);
-    if(craftLimit.num<num) log(bot, `Not enough ${craftLimit.limitingResource} to craft ${num}, crafted ${craftLimit.num}. You now have ${world.getInventoryCounts(bot)[itemName]} ${itemName}.`);
+    if(craftLimit.num<num) {
+        const post = world.getInventoryCounts(bot);
+        const shortfall = num - craftLimit.num;
+        const perCraft = requiredIngredients[craftLimit.limitingResource] || 1;
+        log(bot, formatObjectiveResult(objectiveResult({
+            ok: false,
+            reason: 'partial_craft',
+            message: `Crafted ${craftLimit.num} of ${itemName} (wanted ${num}); ran out of ${craftLimit.limitingResource}.`,
+            need: { [craftLimit.limitingResource]: perCraft * num },
+            have: _filterPositiveCounts({ [craftLimit.limitingResource]: post[craftLimit.limitingResource] || 0, [itemName]: post[itemName] || 0 }),
+            missing: { [craftLimit.limitingResource]: perCraft * shortfall },
+            recommendedCommands: [`!collectBlocks("${craftLimit.limitingResource}", ${perCraft * shortfall})`],
+            data: { crafted: craftLimit.num, target: num },
+        })));
+    }
     else log(bot, `Successfully crafted ${itemName}, you now have ${world.getInventoryCounts(bot)[itemName]} ${itemName}.`);
     if (placedTable) {
         await collectBlock(bot, 'crafting_table', 1);
@@ -548,10 +599,19 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
         }, 64, 1);
 
         if (blocks.length === 0) {
-            if (collected === 0)
-                log(bot, `No ${blockType} nearby to collect.`);
-            else
-                log(bot, `No more ${blockType} nearby to collect.`);
+            if (collected === 0) {
+                log(bot, formatObjectiveResult(objectiveResult({
+                    ok: false,
+                    reason: 'no_blocks_nearby',
+                    message: `No ${blockType} within 64 blocks of current position.`,
+                    missing: { [blockType]: num },
+                    recommendedCommands: [`!searchForBlock("${blockType}", 128)`],
+                    data: { searched_radius: 64, types_tried: blocktypes.join(', ') },
+                })));
+            }
+            else {
+                log(bot, `Collected ${collected}/${num} ${blockType}; no more within 64 blocks.`);
+            }
             break;
         }
         const block = blocks[0];
@@ -559,14 +619,28 @@ export async function collectBlock(bot, blockType, num=1, exclude=null) {
         if (isLiquid) {
             const bucket = bot.inventory.findInventoryItem('bucket');
             if (!bucket) {
-                log(bot, `Don't have bucket to harvest ${blockType}.`);
+                log(bot, formatObjectiveResult(objectiveResult({
+                    ok: false,
+                    reason: 'missing_bucket',
+                    message: `Cannot harvest ${blockType}: bucket required.`,
+                    have: world.getInventoryCounts(bot),
+                    missing: { bucket: 1 },
+                    recommendedCommands: ['!craftRecipe("bucket", 1)'],
+                })));
                 return false;
             }
             await bot.equip(bucket, 'hand');
         }
         const itemId = bot.heldItem ? bot.heldItem.type : null;
         if (!block.canHarvest(itemId)) {
-            log(bot, `Don't have right tools to harvest ${blockType}.`);
+            const haveTools = Object.fromEntries(Object.entries(world.getInventoryCounts(bot)).filter(([k]) => k.endsWith('_pickaxe') || k.endsWith('_axe') || k.endsWith('_shovel') || k.endsWith('_hoe') || k === 'shears'));
+            log(bot, formatObjectiveResult(objectiveResult({
+                ok: false,
+                reason: 'wrong_tool',
+                message: `Cannot harvest ${block.name}: held item lacks required tool tier.`,
+                have: haveTools,
+                data: { block: block.name, equipped: bot.heldItem ? bot.heldItem.name : 'nothing' },
+            })));
             return false;
         }
         try {
@@ -650,7 +724,7 @@ export async function breakBlockAt(bot, x, y, z) {
      **/
     if (x == null || y == null || z == null) throw new Error('Invalid position to break block at.');
     let block = bot.blockAt(Vec3(x, y, z));
-    if (block.name !== 'air' && block.name !== 'water' && block.name !== 'lava') {
+    if (block.name !== 'air' && block.name !== 'cave_air' && block.name !== 'void_air' && block.name !== 'water' && block.name !== 'lava') {
         if (bot.modes.isOn('cheat')) {
             if (useDelay) { await new Promise(resolve => setTimeout(resolve, blockPlaceDelay)); }
             let msg = '/setblock ' + Math.floor(x) + ' ' + Math.floor(y) + ' ' + Math.floor(z) + ' air';
@@ -956,50 +1030,114 @@ export async function putInChest(bot, itemName, num=-1) {
      **/
     let chest = rememberLastStorageBlock(bot, world.getNearestStorageBlock(bot, 32));
     if (!chest) {
-        log(bot, `Could not find a chest nearby.`);
+        log(bot, formatObjectiveResult(objectiveResult({
+            ok: false,
+            reason: 'no_chest_in_range',
+            message: `Cannot put ${itemName}: no chest within 32 blocks.`,
+            missing: { chest_within_32_blocks: 1 },
+            recommendedCommands: ['!searchForBlock("chest", 64)'],
+        })));
         return false;
     }
     let item = bot.inventory.findInventoryItem(itemName);
     if (!item) {
-        log(bot, `You do not have any ${itemName} to put in the chest.`);
+        const have = world.getInventoryCounts(bot);
+        log(bot, formatObjectiveResult(objectiveResult({
+            ok: false,
+            reason: 'item_not_in_inventory',
+            message: `Cannot put ${itemName}: none in inventory.`,
+            have,
+            missing: { [itemName]: num === -1 ? 1 : num },
+            recommendedCommands: [`!collectBlocks("${itemName}", ${num === -1 ? 1 : num})`],
+        })));
         return false;
     }
     let to_put = num === -1 ? item.count : Math.min(num, item.count);
     await goToPosition(bot, chest.position.x, chest.position.y, chest.position.z, 2);
     const chestContainer = await bot.openContainer(chest);
-    await chestContainer.deposit(item.type, null, to_put);
+    try {
+        await chestContainer.deposit(item.type, null, to_put);
+    } catch (err) {
+        await chestContainer.close();
+        log(bot, formatObjectiveResult(objectiveResult({
+            ok: false,
+            reason: 'deposit_threw',
+            message: `Could not deposit ${to_put} ${itemName}: ${err.message}.`,
+            have: world.getInventoryCounts(bot),
+            data: { error: err.message },
+        })));
+        return false;
+    }
     await chestContainer.close();
     log(bot, `Successfully put ${to_put} ${itemName} in the chest.`);
     return true;
 }
 
 async function _depositNamedItemsInNearestChest(bot, itemNames) {
-    const names = [...new Set(itemNames)].filter(Boolean);
+    const names = new Set([...itemNames].filter(Boolean));
+    if (names.size === 0) return false;
     let chest = rememberLastStorageBlock(bot, world.getNearestStorageBlock(bot, 32));
     if (!chest) {
-        log(bot, `Could not find a chest nearby.`);
+        log(bot, formatObjectiveResult(objectiveResult({
+            ok: false,
+            reason: 'no_chest_in_range',
+            message: `Cannot deposit: no chest within 32 blocks.`,
+            missing: { chest_within_32_blocks: 1 },
+            recommendedCommands: ['!searchForBlock("chest", 64)'],
+            data: { wanted: [...names].join(', ') },
+        })));
         return false;
     }
     await goToPosition(bot, chest.position.x, chest.position.y, chest.position.z, 2);
     const chestContainer = await bot.openContainer(chest);
-    let deposited = 0;
+    const depositedByName = {};
+    const failedByName = {};
     try {
-        for (const itemName of names) {
-            while (true) {
-                const item = bot.inventory.findInventoryItem(itemName);
-                if (!item) break;
+        // Snapshot stacks once before depositing. Re-running findInventoryItem after
+        // a deposit can return stale entries (mineflayer hasn't refreshed yet) and
+        // cause chestContainer.deposit to throw "Can't find <item> in slots [27 - 63]".
+        const stacks = bot.inventory.items().filter(i => i && names.has(i.name));
+        for (const item of stacks) {
+            try {
                 await chestContainer.deposit(item.type, null, item.count);
-                deposited += item.count;
+                depositedByName[item.name] = (depositedByName[item.name] || 0) + item.count;
+            } catch (err) {
+                failedByName[item.name] = (failedByName[item.name] || 0) + item.count;
+                log(bot, `Could not deposit ${item.count} ${item.name}: ${err.message}.`);
             }
         }
     } finally {
         await chestContainer.close();
     }
-    if (deposited === 0) {
-        log(bot, `No matching items to deposit: ${names.join(', ')}.`);
+    const totalDeposited = Object.values(depositedByName).reduce((a, b) => a + b, 0);
+    if (totalDeposited === 0) {
+        log(bot, formatObjectiveResult(objectiveResult({
+            ok: false,
+            reason: Object.keys(failedByName).length > 0 ? 'all_deposits_threw' : 'nothing_to_deposit',
+            message: Object.keys(failedByName).length > 0
+                ? `Tried to deposit but every stack failed.`
+                : `No matching items in inventory to deposit.`,
+            have: world.getInventoryCounts(bot),
+            data: {
+                looked_for: [...names].join(', '),
+                failed: Object.entries(failedByName).map(([n, c]) => `${n} x${c}`).join(', ') || 'none',
+            },
+        })));
         return false;
     }
-    log(bot, `Deposited ${deposited} items into the chest.`);
+    if (Object.keys(failedByName).length > 0) {
+        log(bot, formatObjectiveResult(objectiveResult({
+            ok: true,
+            reason: 'partial_deposit',
+            message: `Deposited ${totalDeposited} items, but some stacks failed.`,
+            data: {
+                deposited: Object.entries(depositedByName).map(([n, c]) => `${n} x${c}`).join(', '),
+                failed: Object.entries(failedByName).map(([n, c]) => `${n} x${c}`).join(', '),
+            },
+        })));
+        return true;
+    }
+    log(bot, `Deposited ${totalDeposited} items into the chest (${Object.entries(depositedByName).map(([n, c]) => `${n} x${c}`).join(', ')}).`);
     return true;
 }
 
@@ -2909,13 +3047,40 @@ async function _mineExposedOres(bot, ax, ay, az, oreNames) {
     return collected;
 }
 
+export function _isAirLike(block) {
+    if (!block) return true;
+    return block.name === 'air' || block.name === 'cave_air' || block.name === 'void_air';
+}
+
 export function _isPassableForCorridor(block) {
-    return !block || block.name === 'air';
+    return _isAirLike(block);
 }
 
 export function _isHazardousFluid(block) {
     if (!block) return false;
     return block.name === 'lava' || block.name === 'water' || block.name === 'flowing_lava' || block.name === 'flowing_water';
+}
+
+export function _isStandingInBlockCell(position, x, y, z) {
+    if (!position) return false;
+    return Math.floor(position.x) === x
+        && Math.floor(position.y) === y
+        && Math.floor(position.z) === z;
+}
+
+async function _goToMinedCell(bot, x, y, z, label = 'cell') {
+    try {
+        await goToGoal(bot, new pf.goals.GoalBlock(x, y, z));
+    } catch (err) {
+        log(bot, `Could not step into ${label} (${x}, ${y}, ${z}): ${err.message}.`);
+        return false;
+    }
+    if (!_isStandingInBlockCell(bot.entity.position, x, y, z)) {
+        const here = bot.entity.position;
+        log(bot, `Could not step into ${label} (${x}, ${y}, ${z}); still at (${Math.floor(here.x)}, ${Math.floor(here.y)}, ${Math.floor(here.z)}).`);
+        return false;
+    }
+    return true;
 }
 
 export async function branchMineStep(bot, dirVec, oreName) {
@@ -2951,8 +3116,9 @@ export async function branchMineStep(bot, dirVec, oreName) {
         return null;
     }
 
-    // Step into the cleared cell. Tight closeness so we actually advance.
-    const stepOk = await goToPosition(bot, ax + 0.5, ay, az + 0.5, 1);
+    // Step into the cleared cell. A GoalNear radius of 1 can be satisfied from the
+    // previous block, so require the bot to stand in the new block cell.
+    const stepOk = await _goToMinedCell(bot, ax, ay, az, 'corridor cell');
     if (bot.interrupt_code) return null;
     if (!stepOk) {
         log(bot, `Could not step forward into (${ax}, ${ay}, ${az}).`);
@@ -3004,10 +3170,10 @@ async function _staircaseStepDown(bot, dirVec, oreNamesToScan) {
         log(bot, `Staircase step at (${nx}, ${ny}, ${nz}) hit ${_isHazardousFluid(headBefore) ? headBefore.name : footBefore.name}; aborting.`);
         return false;
     }
-    // Floor block (what the new foot stands on) at (nx, ny - 1, nz). If it's air or fluid,
+    // Floor block (what the new foot stands on) at (nx, ny - 1, nz). If it's air-like or fluid,
     // we'd fall further than intended — bail.
     const floorBlock = bot.blockAt(new Vec3(nx, ny - 1, nz));
-    if (!floorBlock || floorBlock.name === 'air' || _isHazardousFluid(floorBlock)) {
+    if (!floorBlock || _isAirLike(floorBlock) || _isHazardousFluid(floorBlock)) {
         log(bot, `Staircase floor at (${nx}, ${ny - 1}, ${nz}) is ${floorBlock?.name || 'unloaded'}; aborting to avoid falling.`);
         return false;
     }
@@ -3024,7 +3190,7 @@ async function _staircaseStepDown(bot, dirVec, oreNamesToScan) {
         return false;
     }
 
-    const stepOk = await goToPosition(bot, nx + 0.5, ny, nz + 0.5, 1);
+    const stepOk = await _goToMinedCell(bot, nx, ny, nz, 'staircase cell');
     if (bot.interrupt_code) return false;
     if (!stepOk) {
         log(bot, `Could not step into staircase cell (${nx}, ${ny}, ${nz}).`);
