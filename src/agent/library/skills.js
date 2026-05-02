@@ -1368,6 +1368,7 @@ export async function goToGoal(bot, goal, options = {}) {
      * @param {pf.goals.Goal} goal, the goal to navigate to.
      * @param {Object} [options]
      * @param {boolean} [options.forceDestructive=false] - skip non-destructive plan attempt.
+     * @param {boolean} [options.nonDestructiveOnly=false] - never choose a digging path.
      * @param {boolean} [options.failOnNoPath=false] - if both plan attempts fail, return false
      *   instead of falling through to "attempt anyway." Used by chunked nav so it can react.
      * @returns {Promise<boolean>} true if pathfinder.goto resolved (reached the goal), false on
@@ -1375,6 +1376,7 @@ export async function goToGoal(bot, goal, options = {}) {
      **/
 
     const nonDestructiveMovements = new pf.Movements(bot);
+    nonDestructiveMovements.canDig = false;
     const dontBreakBlocks = ['glass', 'glass_pane'];
     for (let block of dontBreakBlocks) {
         nonDestructiveMovements.blocksCantBreak.add(mc.getBlockId(block));
@@ -1394,7 +1396,7 @@ export async function goToGoal(bot, goal, options = {}) {
             log(bot, `Found non-destructive path.`);
         }
     }
-    if (final_movements == null) {
+    if (final_movements == null && !options.nonDestructiveOnly) {
         const dPath = await bot.pathfinder.getPathTo(destructiveMovements, goal, pathfind_timeout);
         if (dPath.status === 'success') {
             final_movements = destructiveMovements;
@@ -1404,6 +1406,10 @@ export async function goToGoal(bot, goal, options = {}) {
     if (final_movements == null) {
         if (options.failOnNoPath) {
             log(bot, `Path not found within ${pathfind_timeout}ms.`);
+            return false;
+        }
+        if (options.nonDestructiveOnly) {
+            log(bot, `Non-destructive path not found within ${pathfind_timeout}ms.`);
             return false;
         }
         log(bot, `Path not found, but attempting to navigate anyway using destructive movements.`);
@@ -1542,6 +1548,49 @@ export async function goToPosition(bot, x, y, z, min_distance=2) {
     } catch (err) {
         log(bot, `Pathfinding stopped: ${err.message}.`);
         clearInterval(progressInterval);
+        return false;
+    }
+}
+
+export async function goToPositionNonDestructive(bot, x, y, z, min_distance=2) {
+    if (x == null || y == null || z == null) {
+        log(bot, `Missing coordinates, given x:${x} y:${y} z:${z}`);
+        return false;
+    }
+    if (bot.modes.isOn('cheat')) {
+        bot.chat('/tp @s ' + x + ' ' + y + ' ' + z);
+        log(bot, `Teleported to ${x}, ${y}, ${z}.`);
+        return true;
+    }
+    try {
+        const goal = new pf.goals.GoalNear(x, y, z, min_distance);
+        const ok = await goToGoal(bot, goal, { nonDestructiveOnly: true, failOnNoPath: true });
+        if (!ok) return false;
+        const distance = bot.entity.position.distanceTo(new Vec3(x, y, z));
+        if (distance <= min_distance + 1) {
+            log(bot, `You have reached at ${x}, ${y}, ${z}.`);
+            return true;
+        }
+        log(bot, `Unable to reach ${x}, ${y}, ${z}, you are ${Math.round(distance)} blocks away.`);
+        return false;
+    } catch (err) {
+        log(bot, `Non-destructive pathfinding stopped: ${err.message}.`);
+        return false;
+    }
+}
+
+export async function goToPositionAllowDigOnce(bot, x, y, z, min_distance=2) {
+    try {
+        await goToGoal(bot, new pf.goals.GoalNear(x, y, z, min_distance), { forceDestructive: true });
+        const distance = bot.entity.position.distanceTo(new Vec3(x, y, z));
+        if (distance <= min_distance + 1) {
+            log(bot, `Reached approved digging segment at ${x}, ${y}, ${z}.`);
+            return true;
+        }
+        log(bot, `Approved digging segment did not reach ${x}, ${y}, ${z}; ${Math.round(distance)} blocks away.`);
+        return false;
+    } catch (err) {
+        log(bot, `Approved digging segment failed: ${err.message}.`);
         return false;
     }
 }

@@ -2,6 +2,9 @@
 
 This document describes the main runtime flow from an incoming chat prompt to an LLM response, command execution, follow-up prompting, and memory updates.
 
+For the typed world-memory schema and the JourneyMap, route, observation, and
+storage commands built on it, see `docs/situational-memory.md`.
+
 ## 1. Startup And Runtime Components
 
 `Agent.start()` wires together the main systems before the Minecraft bot begins responding:
@@ -10,7 +13,7 @@ This document describes the main runtime flow from an incoming chat prompt to an
 - `History` owns recent conversation turns, the long-term conversation summary, and persisted memory files.
 - `ActionManager` tracks running actions and coordinates action execution.
 - `ObjectiveStack` tracks higher-level objectives.
-- `MemoryBank` stores structured world facts such as known positions or named locations.
+- `MemoryBank` stores typed world facts such as known places, JourneyMap waypoints, routes, storage indexes, observations, and pending recovery issues.
 - `SelfPrompter` can generate system/self prompts when autonomous follow-up is needed.
 - `TranscriptLogger` records observability events for chat, prompt construction, model calls, commands, memory saves, and failures.
 
@@ -123,14 +126,15 @@ If the response contains no command:
 
 If the response contains a command:
 
-1. The response is truncated after the first command. Later commands in the same response are ignored.
-2. The assistant response is added to history.
-3. The command name and arguments are parsed and validated.
-4. Invalid or hallucinated commands add a system error to history and the loop asks the model again.
+1. The full assistant response is added to history.
+2. Command spans are extracted from the response in source order.
+3. Each command name and its arguments are parsed and validated.
+4. Invalid or hallucinated commands add a system error to history, stop the current command queue, and the loop asks the model again.
 5. Valid commands are optionally announced to chat, depending on settings.
-6. `executeCommand()` runs the command.
-7. The command output is added back to history as a system message.
-8. The loop prompts the model again, now with the action result in context.
+6. `executeCommand()` runs each queued command serially.
+7. Each command output is added back to history as a system message.
+8. Empty command output, interruption, or command failure stops the current queue.
+9. The loop prompts the model again, now with the action result in context.
 
 That command-result re-prompt is the core reasoning loop.
 
@@ -138,7 +142,7 @@ That command-result re-prompt is the core reasoning loop.
 
 Commands are defined in `src/agent/commands`. The dispatcher in `commands/index.js`:
 
-- detects command syntax with `containsCommand()`;
+- detects command syntax with `containsCommand()` and extracts queued model commands with `extractCommandMessages()`;
 - validates command names and argument types with `parseCommandMessage()`;
 - records `command.parsed`, `command.start`, `command.end`, and `command.failure` transcript events;
 - calls the command's `perform(agent, ...args)` function;
@@ -213,7 +217,7 @@ The memory summary path is failure-safe:
 - failures keep the previous memory instead of blocking normal operation;
 - saved memory is capped to a short text summary.
 
-`History.save()` persists memory, recent turns, self-prompting state, task start time, and last sender to:
+`History.save()` persists memory, recent turns, self-prompting state, task start time, last sender, and the typed `MemoryBank` state to:
 
 ```text
 bots/{bot_name}/memory.json
@@ -229,9 +233,21 @@ bots/{bot_name}/histories/
 
 ### Structured World Memory
 
-`MemoryBank` is separate from the natural-language conversation summary. It stores named world facts and locations, such as home chest position, mining entry points, or last death position.
+`MemoryBank` is separate from the natural-language conversation summary. It stores typed world facts and locations used by command logic.
 
-This memory is useful for command logic and navigation. It is not the same thing as `$MEMORY`, though commands and prompt context may expose some structured facts back to the model.
+The current namespaces are:
+
+- `places`: compatibility layer for remembered coordinates such as `home_chest`, mining entry points, and last death position.
+- `journeymap.waypoints`: imported JourneyMap waypoint records.
+- `routes`: saved breadcrumb routes with endpoints, dimension, and last failure.
+- `storage`: labeled/indexed chest, trapped chest, and barrel records.
+- `observations`: event-triggered vision summaries.
+- `pending`: active route recordings and route issues awaiting human approval.
+
+This memory is useful for command logic and navigation. It is not the same thing
+as `$MEMORY`, though commands and prompt context may expose structured facts back
+to the model. The detailed schema and command workflows are documented in
+`docs/situational-memory.md`.
 
 ### Transcript Logs
 

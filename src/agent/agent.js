@@ -4,7 +4,7 @@ import { VisionInterpreter } from './vision/vision_interpreter.js';
 import { Prompter } from '../models/prompter.js';
 import { initModes } from './modes.js';
 import { initBot } from '../utils/mcdata.js';
-import { containsCommand, commandExists, executeCommand, truncCommandMessage, isAction, blacklistCommands } from './commands/index.js';
+import { containsCommand, commandExists, executeCommand, extractCommandMessages, isAction, blacklistCommands } from './commands/index.js';
 import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
 import { MemoryBank } from './memory_bank.js';
@@ -376,51 +376,66 @@ export class Agent {
                 break; // empty response ends loop
             }
 
-            let command_name = containsCommand(res);
+            let command_messages = extractCommandMessages(res);
 
-            if (command_name) { // contains query or command
-                res = truncCommandMessage(res); // everything after the command is ignored
+            if (command_messages.length > 0) { // contains query or command
                 this.history.add(this.name, res);
-                
-                if (!commandExists(command_name)) {
-                    this.history.add('system', `Command ${command_name} does not exist.`);
-                    console.warn('Agent hallucinated command:', command_name)
-                    this.transcript?.record('command.hallucinated', {
-                        command_name,
-                        response: res
-                    }, 'agent');
-                    continue;
+
+                let stop_loop = false;
+                for (let j=0; j<command_messages.length; j++) {
+                    const command_message = command_messages[j];
+                    const command_name = command_message.commandName;
+                    
+                    if (!commandExists(command_name)) {
+                        this.history.add('system', `Command ${command_name} does not exist.`);
+                        console.warn('Agent hallucinated command:', command_name)
+                        this.transcript?.record('command.hallucinated', {
+                            command_name,
+                            response: res
+                        }, 'agent');
+                        break;
+                    }
+
+                    if (checkInterrupt()) {
+                        stop_loop = true;
+                        break;
+                    }
+                    this.self_prompter.handleUserPromptedCmd(self_prompt, isAction(command_name));
+
+                    const pre_message = j === 0 ? res.substring(0, command_message.index).trim() : '';
+                    if (settings.show_command_syntax === "full") {
+                        let chat_message = command_message.commandText;
+                        if (pre_message.length > 0)
+                            chat_message = `${pre_message}  ${chat_message}`;
+                        this.routeResponse(source, chat_message);
+                    }
+                    else if (settings.show_command_syntax === "shortened") {
+                        // show only "used !commandname"
+                        let chat_message = `*used ${command_name.substring(1)}*`;
+                        if (pre_message.length > 0)
+                            chat_message = `${pre_message}  ${chat_message}`;
+                        this.routeResponse(source, chat_message);
+                    }
+                    else {
+                        // no command at all
+                        if (pre_message.trim().length > 0)
+                            this.routeResponse(source, pre_message);
+                    }
+
+                    let execute_res = await executeCommand(this, command_message.commandText);
+
+                    console.log('Agent executed:', command_name, 'and got:', execute_res);
+                    used_command = true;
+
+                    if (execute_res)
+                        this.history.add('system', execute_res);
+                    else {
+                        stop_loop = true;
+                        break;
+                    }
                 }
 
-                if (checkInterrupt()) break;
-                this.self_prompter.handleUserPromptedCmd(self_prompt, isAction(command_name));
-
-                if (settings.show_command_syntax === "full") {
-                    this.routeResponse(source, res);
-                }
-                else if (settings.show_command_syntax === "shortened") {
-                    // show only "used !commandname"
-                    let pre_message = res.substring(0, res.indexOf(command_name)).trim();
-                    let chat_message = `*used ${command_name.substring(1)}*`;
-                    if (pre_message.length > 0)
-                        chat_message = `${pre_message}  ${chat_message}`;
-                    this.routeResponse(source, chat_message);
-                }
-                else {
-                    // no command at all
-                    let pre_message = res.substring(0, res.indexOf(command_name)).trim();
-                    if (pre_message.trim().length > 0)
-                        this.routeResponse(source, pre_message);
-                }
-
-                let execute_res = await executeCommand(this, res);
-
-                console.log('Agent executed:', command_name, 'and got:', execute_res);
-                used_command = true;
-
-                if (execute_res)
-                    this.history.add('system', execute_res);
-                else
+                if (stop_loop)
                     break;
             }
             else { // conversation response

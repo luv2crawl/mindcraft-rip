@@ -4,6 +4,26 @@ import settings from '../settings.js';
 import convoManager from '../conversation.js';
 import { runMiningObjective } from '../objectives/mining_objective.js';
 import { objectiveResult, formatObjectiveResult } from '../objectives/objective_results.js';
+import Vec3 from 'vec3';
+import {
+    fetchBridgeWaypoints,
+    normalizeBridgeWaypoint,
+    parseJourneyMapLocation,
+    postBridgeMarker,
+    postBridgeWaypoint,
+} from '../journeymap.js';
+import {
+    buildRouteRecord,
+    currentPositionRecord,
+    makeRouteIssue,
+    shouldRecordBreadcrumb,
+    summarizeRoute,
+} from '../route_memory.js';
+import {
+    makeStorageRecord,
+    searchStorage,
+    storageKeyFromPosition,
+} from '../storage_memory.js';
 
 
 function runAsAction (actionFn, resume = false, timeout = -1) {
@@ -26,6 +46,146 @@ function runAsAction (actionFn, resume = false, timeout = -1) {
     };
 
     return wrappedAction;
+}
+
+function okResult(message, data = {}) {
+    return formatObjectiveResult(objectiveResult({ ok: true, reason: 'ok', message, data }));
+}
+
+function failResult(reason, message, extras = {}) {
+    return formatObjectiveResult(objectiveResult({ ok: false, reason, message, ...extras }));
+}
+
+function getKnownLocation(agent, name) {
+    const place = agent.memory_bank.recall('places', name);
+    if (place) return { ...place, name, source: 'places' };
+    const waypoint = agent.memory_bank.recall('journeymap.waypoints', name);
+    if (waypoint) return { ...waypoint, name, source: 'journeymap.waypoints' };
+    const storage = agent.memory_bank.recall('storage', name);
+    if (storage) return { ...storage, name, source: 'storage' };
+    return null;
+}
+
+function startRouteRecorder(agent, name) {
+    if (agent.routeRecordingInterval) {
+        clearInterval(agent.routeRecordingInterval);
+        agent.routeRecordingInterval = null;
+    }
+    const first = currentPositionRecord(agent.bot);
+    agent.activeRouteRecording = {
+        name,
+        breadcrumbs: [first],
+        dimension: first.dimension,
+        startedAt: first.t,
+    };
+    agent.memory_bank.remember('pending', 'route_recording', agent.activeRouteRecording);
+    agent.routeRecordingInterval = setInterval(() => {
+        if (!agent.activeRouteRecording) return;
+        const next = currentPositionRecord(agent.bot);
+        const last = agent.activeRouteRecording.breadcrumbs.at(-1);
+        if (shouldRecordBreadcrumb(last, next, 2)) {
+            agent.activeRouteRecording.breadcrumbs.push(next);
+            agent.activeRouteRecording.dimension = agent.activeRouteRecording.dimension || next.dimension;
+            agent.memory_bank.remember('pending', 'route_recording', agent.activeRouteRecording);
+        }
+    }, 1000);
+}
+
+function stopRouteRecorder(agent) {
+    if (agent.routeRecordingInterval) {
+        clearInterval(agent.routeRecordingInterval);
+        agent.routeRecordingInterval = null;
+    }
+    const recording = agent.activeRouteRecording || agent.memory_bank.recall('pending', 'route_recording');
+    agent.activeRouteRecording = null;
+    agent.memory_bank.remember('pending', 'route_recording', null);
+    return recording;
+}
+
+async function captureObservation(agent, reason) {
+    if (!settings.allow_vision || !agent.vision_interpreter?.allow_vision || !agent.vision_interpreter?.camera) {
+        return {
+            ok: false,
+            reason: 'vision_unavailable',
+            message: 'Vision is disabled. Enable allow_vision to capture screenshot observations.',
+        };
+    }
+    const filename = await agent.vision_interpreter.camera.capture();
+    const summary = await agent.vision_interpreter.analyzeImage(filename);
+    const key = `${Date.now()}_${String(reason || 'observation').replace(/[^\w-]/g, '_')}`;
+    const record = {
+        reason,
+        summary,
+        filename,
+        position: currentPositionRecord(agent.bot),
+        createdAt: new Date().toISOString(),
+    };
+    agent.memory_bank.remember('observations', key, record);
+    return { ok: true, key, record };
+}
+
+async function followRouteInternal(agent, routeName, options = {}) {
+    const route = agent.memory_bank.recall('routes', routeName);
+    if (!route) {
+        return failResult('route_missing', `No route named "${routeName}" is saved.`, {
+            recommendedCommands: [`!startRouteRecording("${routeName}")`],
+        });
+    }
+    const currentDimension = agent.bot.game?.dimension || null;
+    if (route.dimension && currentDimension && route.dimension !== currentDimension) {
+        const issue = makeRouteIssue(routeName, 0, 'dimension_mismatch', { routeDimension: route.dimension, currentDimension });
+        agent.memory_bank.remember('pending', 'route_issue', issue);
+        route.lastFailure = issue;
+        agent.memory_bank.remember('routes', routeName, route);
+        return failResult('dimension_mismatch', `Route "${routeName}" is in ${route.dimension}, but bot is in ${currentDimension}.`);
+    }
+
+    const startSegment = options.startSegment || 0;
+    const allowDigSegment = options.allowDigOnce ? startSegment : -1;
+    let reached = 0;
+    for (let i = startSegment; i < (route.breadcrumbs?.length || 0); i++) {
+        if (agent.bot.interrupt_code) {
+            const issue = makeRouteIssue(routeName, i, 'interrupted');
+            agent.memory_bank.remember('pending', 'route_issue', issue);
+            route.lastFailure = issue;
+            agent.memory_bank.remember('routes', routeName, route);
+            return failResult('interrupted', `Route "${routeName}" was interrupted at segment ${i}.`);
+        }
+        const point = route.breadcrumbs[i];
+        const ok = i === allowDigSegment
+            ? await skills.goToPositionAllowDigOnce(agent.bot, point.x, point.y, point.z, 2)
+            : await skills.goToPositionNonDestructive(agent.bot, point.x, point.y, point.z, 2);
+        if (!ok) {
+            const issue = makeRouteIssue(routeName, i, 'route_blocked', { point });
+            if (settings.allow_vision) {
+                const observation = await captureObservation(agent, `route_failure_${routeName}_${i}`);
+                if (observation.ok) issue.observationKey = observation.key;
+            }
+            agent.memory_bank.remember('pending', 'route_issue', issue);
+            route.lastFailure = issue;
+            agent.memory_bank.remember('routes', routeName, route);
+            return failResult('route_blocked', `Route "${routeName}" is blocked at segment ${i}. I stopped before digging.`, {
+                recommendedCommands: [
+                    `!continueRoute("${routeName}", "retry")`,
+                    `!continueRoute("${routeName}", "skip_segment")`,
+                    `!continueRoute("${routeName}", "allow_dig_once")`,
+                ],
+                data: { segment: i },
+            });
+        }
+        reached = i + 1;
+    }
+    route.lastFailure = null;
+    route.updatedAt = new Date().toISOString();
+    agent.memory_bank.remember('routes', routeName, route);
+    agent.memory_bank.remember('pending', 'route_issue', null);
+    return okResult(`Followed route "${routeName}".`, { reachedSegments: reached });
+}
+
+async function openStorageAt(agent, record) {
+    await skills.goToPositionChunked(agent.bot, record.x, record.y, record.z, 2);
+    const block = agent.bot.blockAt(new Vec3(record.x, record.y, record.z));
+    return block;
 }
 
 export const actionsList = [
@@ -134,8 +294,207 @@ export const actionsList = [
             'closeness': {type: 'float', description: 'How close to get to the location.', domain: [0, Infinity]}
         },
         perform: runAsAction(async (agent, x, y, z, closeness) => {
-            await skills.goToPosition(agent.bot, x, y, z, closeness);
+            await skills.goToPositionChunked(agent.bot, x, y, z, closeness);
         })
+    },
+    {
+        name: '!syncJourneyMap',
+        description: 'Import waypoints from the optional local JourneyMap bridge.',
+        params: {},
+        perform: async function(agent) {
+            try {
+                const rawWaypoints = await fetchBridgeWaypoints();
+                let imported = 0;
+                for (const raw of rawWaypoints) {
+                    const waypoint = normalizeBridgeWaypoint(raw);
+                    if (!waypoint) continue;
+                    agent.memory_bank.remember('journeymap.waypoints', waypoint.name, waypoint);
+                    imported++;
+                }
+                return okResult(`Imported ${imported} JourneyMap waypoint${imported === 1 ? '' : 's'}.`, { imported });
+            } catch (err) {
+                return failResult('journeymap_bridge_unavailable', 'JourneyMap bridge is unavailable. Paste a shared JourneyMap location with !importJourneyMapLocation("[x:10, y:64, z:-20, dim:0, name:base]").', {
+                    recommendedCommands: ['!importJourneyMapLocation("[x:10, y:64, z:-20, dim:0, name:base]")'],
+                    data: { error: err.message },
+                });
+            }
+        }
+    },
+    {
+        name: '!importJourneyMapLocation',
+        description: 'Import a pasted JourneyMap shared location string as a waypoint.',
+        params: {
+            'text': { type: 'string', description: 'A JourneyMap location string like [x:10, y:64, z:-20, dim:0, name:base].' }
+        },
+        perform: async function(agent, text) {
+            const parsed = parseJourneyMapLocation(text);
+            if (!parsed.ok) {
+                return failResult('invalid_journeymap_location', 'JourneyMap location must include x and z fields.', {
+                    missing: parsed.missing,
+                    recommendedCommands: ['!importJourneyMapLocation("[x:10, y:64, z:-20, dim:0, name:base]")'],
+                });
+            }
+            agent.memory_bank.remember('journeymap.waypoints', parsed.waypoint.name, parsed.waypoint);
+            return okResult(`Imported JourneyMap waypoint "${parsed.waypoint.name}".`, {
+                x: parsed.waypoint.x,
+                y: parsed.waypoint.y ?? 'unknown',
+                z: parsed.waypoint.z,
+            });
+        }
+    },
+    {
+        name: '!goToWaypoint',
+        description: 'Navigate to an imported JourneyMap waypoint by name.',
+        params: {
+            'name': { type: 'string', description: 'The JourneyMap waypoint name.' }
+        },
+        perform: async function(agent, name) {
+            const waypoint = agent.memory_bank.recall('journeymap.waypoints', name);
+            if (!waypoint) {
+                return failResult('waypoint_missing', `No JourneyMap waypoint named "${name}" is imported.`, {
+                    recommendedCommands: ['!syncJourneyMap', '!journeyMapWaypoints'],
+                });
+            }
+            const y = waypoint.y ?? agent.bot.entity.position.y;
+            let result = '';
+            const actionFn = async () => {
+                const ok = await skills.goToPositionChunked(agent.bot, waypoint.x, y, waypoint.z, 2);
+                result = ok
+                    ? okResult(`Arrived near waypoint "${name}".`, { x: waypoint.x, y, z: waypoint.z })
+                    : failResult('no_path', `Could not reach waypoint "${name}".`, { data: { x: waypoint.x, y, z: waypoint.z } });
+            };
+            const action = await agent.actions.runAction('action:goToWaypoint', actionFn, { timeout: -1 });
+            return result || action.message;
+        }
+    },
+    {
+        name: '!exportWaypoint',
+        description: 'Send a known place, JourneyMap waypoint, route endpoint, or storage marker to the optional JourneyMap bridge.',
+        params: {
+            'name': { type: 'string', description: 'The marker name to export.' }
+        },
+        perform: async function(agent, name) {
+            const location = getKnownLocation(agent, name);
+            const route = agent.memory_bank.recall('routes', name);
+            const marker = location || (route?.end ? { ...route.end, name, source: 'routes' } : null);
+            if (!marker) {
+                return failResult('marker_missing', `No known place, waypoint, route, or storage named "${name}".`, {
+                    recommendedCommands: ['!savedPlaces', '!journeyMapWaypoints'],
+                });
+            }
+            try {
+                const payload = {
+                    name,
+                    x: marker.x,
+                    y: marker.y,
+                    z: marker.z,
+                    dimension: marker.dimension || agent.bot.game?.dimension || null,
+                    source: marker.source || 'mindcraft',
+                };
+                if (marker.source === 'journeymap.waypoints') await postBridgeWaypoint(payload);
+                else await postBridgeMarker(payload);
+                return okResult(`Exported "${name}" to JourneyMap bridge.`, payload);
+            } catch (err) {
+                return failResult('journeymap_bridge_unavailable', 'JourneyMap bridge is unavailable; marker was not exported.', {
+                    recommendedCommands: ['!syncJourneyMap'],
+                    data: { error: err.message },
+                });
+            }
+        }
+    },
+    {
+        name: '!startRouteRecording',
+        description: 'Start recording route breadcrumbs while the bot moves.',
+        params: {
+            'name': { type: 'string', description: 'The name to save the route under.' }
+        },
+        perform: async function(agent, name) {
+            startRouteRecorder(agent, name);
+            return okResult(`Started route recording "${name}".`);
+        }
+    },
+    {
+        name: '!stopRouteRecording',
+        description: 'Stop recording route breadcrumbs and save the route.',
+        params: {},
+        perform: async function(agent) {
+            const recording = stopRouteRecorder(agent);
+            if (!recording) {
+                return failResult('no_route_recording', 'No route recording is active.', {
+                    recommendedCommands: ['!startRouteRecording("route_name")'],
+                });
+            }
+            const route = buildRouteRecord(recording.name, recording.breadcrumbs, recording.dimension, { createdAt: recording.startedAt });
+            agent.memory_bank.remember('routes', route.name, route);
+            return okResult(`Saved route "${route.name}" with ${route.breadcrumbs.length} breadcrumb${route.breadcrumbs.length === 1 ? '' : 's'}.`, summarizeRoute(route));
+        }
+    },
+    {
+        name: '!followRoute',
+        description: 'Follow a saved route non-destructively. If blocked, stop and ask for user approval before digging.',
+        params: {
+            'name': { type: 'string', description: 'The saved route name.' }
+        },
+        perform: async function(agent, name) {
+            let result = '';
+            const actionFn = async () => { result = await followRouteInternal(agent, name); };
+            const action = await agent.actions.runAction('action:followRoute', actionFn, { timeout: -1 });
+            return result || action.message;
+        }
+    },
+    {
+        name: '!routeStatus',
+        description: 'Report route length, endpoints, last failure, and JourneyMap-linked waypoints.',
+        params: {
+            'name': { type: 'string', description: 'The saved route name.' }
+        },
+        perform: async function(agent, name) {
+            const route = agent.memory_bank.recall('routes', name);
+            if (!route) return failResult('route_missing', `No route named "${name}" is saved.`);
+            return okResult(`Route "${name}" status.`, summarizeRoute(route));
+        }
+    },
+    {
+        name: '!continueRoute',
+        description: 'Resume a blocked route after explicit user instruction. action must be retry, skip_segment, or allow_dig_once.',
+        params: {
+            'name': { type: 'string', description: 'The saved route name.' },
+            'action': { type: 'string', description: 'retry, skip_segment, or allow_dig_once.' }
+        },
+        perform: async function(agent, name, action) {
+            if (!['retry', 'skip_segment', 'allow_dig_once'].includes(action)) {
+                return failResult('invalid_route_action', 'Use retry, skip_segment, or allow_dig_once.');
+            }
+            const issue = agent.memory_bank.recall('pending', 'route_issue');
+            const startSegment = issue?.routeName === name
+                ? issue.segmentIndex + (action === 'skip_segment' ? 1 : 0)
+                : 0;
+            let result = '';
+            const actionFn = async () => {
+                result = await followRouteInternal(agent, name, {
+                    startSegment,
+                    allowDigOnce: action === 'allow_dig_once',
+                });
+            };
+            const run = await agent.actions.runAction('action:continueRoute', actionFn, { timeout: -1 });
+            return result || run.message;
+        }
+    },
+    {
+        name: '!observeHere',
+        description: 'Capture one vision observation for the current view and store a concise summary.',
+        params: {
+            'reason': { type: 'string', description: 'Why this observation is being captured.' }
+        },
+        perform: async function(agent, reason) {
+            const observation = await captureObservation(agent, reason);
+            if (!observation.ok) {
+                return failResult(observation.reason, observation.message, {
+                    recommendedCommands: ['Enable allow_vision in settings.js, then restart.'],
+                });
+            }
+            return okResult(`Saved observation "${observation.key}".`, { key: observation.key });
+        }
     },
     {
         name: '!searchForBlock',
@@ -380,6 +739,195 @@ export const actionsList = [
             }
             agent.memory_bank.rememberPlace('home_chest', chest.x, chest.y, chest.z);
             return `Home chest saved at (${chest.x}, ${chest.y}, ${chest.z}).`;
+        }
+    },
+    {
+        name: '!labelNearestStorage',
+        description: 'Save the nearest chest, trapped chest, or barrel as a named storage location.',
+        params: {
+            'name': { type: 'string', description: 'The storage name to save.' }
+        },
+        perform: async function(agent, name) {
+            const block = world.getNearestStorageBlock(agent.bot, 16);
+            if (!block) {
+                return failResult('no_storage_in_range', 'No chest, trapped chest, or barrel within 16 blocks.', {
+                    recommendedCommands: ['!searchForBlock("chest", 64)'],
+                });
+            }
+            const record = makeStorageRecord(name, block, [], {
+                dimension: agent.bot.game?.dimension || null,
+                source: 'storage_label',
+            });
+            agent.memory_bank.remember('storage', name, record);
+            return okResult(`Saved ${block.name} as storage "${name}".`, {
+                x: record.x,
+                y: record.y,
+                z: record.z,
+            });
+        }
+    },
+    {
+        name: '!indexStorage',
+        description: 'Open a named storage block, aggregate contents, and refresh its storage index.',
+        params: {
+            'name': { type: 'string', description: 'The storage name to index.' }
+        },
+        perform: async function(agent, name) {
+            let result = '';
+            const actionFn = async () => {
+                const record = agent.memory_bank.recall('storage', name);
+                if (!record) {
+                    result = failResult('storage_missing', `No storage named "${name}" is saved.`, {
+                        recommendedCommands: [`!labelNearestStorage("${name}")`],
+                    });
+                    return;
+                }
+                const block = await openStorageAt(agent, record);
+                if (!world.isStorageBlock(block)) {
+                    result = failResult('storage_block_missing', `Saved storage "${name}" is no longer a chest, trapped chest, or barrel.`);
+                    return;
+                }
+                const container = await agent.bot.openContainer(block);
+                const items = container.containerItems();
+                await container.close();
+                const indexed = makeStorageRecord(name, block, items, {
+                    dimension: agent.bot.game?.dimension || null,
+                });
+                agent.memory_bank.remember('storage', name, indexed);
+                result = okResult(`Indexed storage "${name}".`, {
+                    itemTypes: Object.keys(indexed.counts).length,
+                    totalItems: Object.values(indexed.counts).reduce((a, b) => a + b, 0),
+                    indexedAt: indexed.indexedAt,
+                });
+            };
+            const action = await agent.actions.runAction('action:indexStorage', actionFn, { timeout: 5 });
+            return result || action.message;
+        }
+    },
+    {
+        name: '!indexStorageArea',
+        description: 'Scan nearby storage blocks around a known place or waypoint and index reachable containers.',
+        params: {
+            'place_or_waypoint': { type: 'string', description: 'A saved place or JourneyMap waypoint to scan around.' }
+        },
+        perform: async function(agent, place_or_waypoint) {
+            let result = '';
+            const actionFn = async () => {
+                const target = getKnownLocation(agent, place_or_waypoint);
+                if (!target) {
+                    result = failResult('location_missing', `No place, waypoint, or storage named "${place_or_waypoint}" is known.`, {
+                        recommendedCommands: ['!savedPlaces', '!journeyMapWaypoints'],
+                    });
+                    return;
+                }
+                const y = target.y ?? agent.bot.entity.position.y;
+                const reached = await skills.goToPositionChunked(agent.bot, target.x, y, target.z, 6);
+                if (!reached) {
+                    result = failResult('no_path', `Could not reach "${place_or_waypoint}" to scan storage.`);
+                    return;
+                }
+                const blocks = world.getNearestBlocksWhere(agent.bot, block => world.isStorageBlock(block), 24, 16);
+                let indexed = 0;
+                for (const block of blocks) {
+                    if (!block?.position) continue;
+                    const key = storageKeyFromPosition(block.position);
+                    const name = `storage_${key}`;
+                    const close = await skills.goToPositionNonDestructive(agent.bot, block.position.x, block.position.y, block.position.z, 2);
+                    if (!close) continue;
+                    try {
+                        const container = await agent.bot.openContainer(block);
+                        const items = container.containerItems();
+                        await container.close();
+                        agent.memory_bank.remember('storage', name, makeStorageRecord(name, block, items, {
+                            dimension: agent.bot.game?.dimension || null,
+                        }));
+                        indexed++;
+                    } catch (err) {
+                        skills.log(agent.bot, `Could not index ${name}: ${err.message}.`);
+                    }
+                }
+                result = okResult(`Indexed ${indexed} storage container${indexed === 1 ? '' : 's'} near "${place_or_waypoint}".`, { indexed });
+            };
+            const action = await agent.actions.runAction('action:indexStorageArea', actionFn, { timeout: 10 });
+            return result || action.message;
+        }
+    },
+    {
+        name: '!findInStorage',
+        description: 'Search indexed storage memory for an item and report matching containers.',
+        params: {
+            'item_name': { type: 'ItemName', description: 'The item to find in indexed storage.' }
+        },
+        perform: async function(agent, item_name) {
+            const matches = searchStorage(agent.memory_bank.list('storage'), item_name);
+            if (matches.length === 0) {
+                return failResult('item_not_indexed', `No indexed storage contains ${item_name}.`, {
+                    recommendedCommands: ['!indexStorageArea("base")'],
+                    missing: { [item_name]: 1 },
+                });
+            }
+            const lines = matches.map(match => {
+                const found = Object.entries(match.found).map(([name, count]) => `${name} x${count}`).join(', ');
+                const stale = match.record.indexedAt ? `indexed ${match.record.indexedAt}` : 'not indexed recently';
+                return `${match.record.name}: ${found} at (${match.record.x}, ${match.record.y}, ${match.record.z}); ${stale}`;
+            });
+            return okResult(`Found ${item_name} in indexed storage.\n${lines.join('\n')}`, { matches: matches.length });
+        }
+    },
+    {
+        name: '!restockFromStorage',
+        description: 'Navigate to the best indexed storage container, withdraw up to the requested count, and update the index.',
+        params: {
+            'item_name': { type: 'ItemName', description: 'The item to withdraw.' },
+            'num': { type: 'int', description: 'How many items to withdraw.', domain: [1, Number.MAX_SAFE_INTEGER] }
+        },
+        perform: async function(agent, item_name, num) {
+            let result = '';
+            const actionFn = async () => {
+                const matches = searchStorage(agent.memory_bank.list('storage'), item_name)
+                    .filter(match => (match.record.counts?.[item_name] || 0) > 0);
+                if (matches.length === 0) {
+                    result = failResult('item_not_indexed', `No indexed storage contains ${item_name}.`, {
+                        missing: { [item_name]: num },
+                        recommendedCommands: ['!findInStorage("' + item_name + '")', '!indexStorageArea("base")'],
+                    });
+                    return;
+                }
+                const best = matches[0].record;
+                const block = await openStorageAt(agent, best);
+                if (!world.isStorageBlock(block)) {
+                    result = failResult('storage_block_missing', `Storage "${best.name}" is no longer accessible.`);
+                    return;
+                }
+                const container = await agent.bot.openContainer(block);
+                const matchingItems = container.containerItems().filter(item => item.name === item_name);
+                const available = matchingItems.reduce((sum, item) => sum + item.count, 0);
+                let remaining = Math.min(num, available);
+                let taken = 0;
+                for (const item of matchingItems) {
+                    if (remaining <= 0) break;
+                    const take = Math.min(remaining, item.count);
+                    await container.withdraw(item.type, null, take);
+                    taken += take;
+                    remaining -= take;
+                }
+                const refreshed = container.containerItems();
+                await container.close();
+                agent.memory_bank.remember('storage', best.name, makeStorageRecord(best.name, block, refreshed, {
+                    dimension: agent.bot.game?.dimension || null,
+                }));
+                if (taken < num) {
+                    result = failResult('partial_restock', `Withdrew ${taken}/${num} ${item_name}; storage did not have enough.`, {
+                        have: { [item_name]: taken },
+                        missing: { [item_name]: num - taken },
+                        data: { storage: best.name },
+                    });
+                } else {
+                    result = okResult(`Withdrew ${taken} ${item_name} from "${best.name}".`, { storage: best.name, taken });
+                }
+            };
+            const action = await agent.actions.runAction('action:restockFromStorage', actionFn, { timeout: 10 });
+            return result || action.message;
         }
     },
     {

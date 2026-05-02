@@ -85,6 +85,39 @@ describe('example selection fallback', () => {
         assert.match(outputs(selected), /john_goodman|Hey John|startConversation/);
     });
 
+    test('JourneyMap request selects JourneyMap commands', async () => {
+        const examples = new Examples(null, 1);
+        await examples.load(defaultProfile.conversation_examples);
+
+        const selected = await examples.getRelevant([
+            { role: 'user', content: 'maya: import this JourneyMap waypoint [x:10, y:64, z:-20, name:base]' }
+        ]);
+
+        assert.match(outputs(selected), /!importJourneyMapLocation/);
+    });
+
+    test('route request selects route commands', async () => {
+        const examples = new Examples(null, 1);
+        await examples.load(defaultProfile.conversation_examples);
+
+        const selected = await examples.getRelevant([
+            { role: 'user', content: 'sam: follow the mine_path route' }
+        ]);
+
+        assert.match(outputs(selected), /!followRoute\("mine_path"\)/);
+    });
+
+    test('storage request selects storage commands', async () => {
+        const examples = new Examples(null, 1);
+        await examples.load(defaultProfile.conversation_examples);
+
+        const selected = await examples.getRelevant([
+            { role: 'user', content: 'zib: find torches in storage' }
+        ]);
+
+        assert.match(outputs(selected), /!findInStorage\("torch"\)/);
+    });
+
     test('old repeated history does not override the latest request', async () => {
         const examples = new Examples(null, 1);
         await examples.load(defaultProfile.conversation_examples);

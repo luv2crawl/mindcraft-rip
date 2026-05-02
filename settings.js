@@ -29,7 +29,7 @@ const settings = {
     "init_message": "Respond with hello world and your name", // sends to all on spawn
     "only_chat_with": [], // users that the bots listen to and send general messages to. if empty it will chat publicly
 
-    "speak": true,
+    "speak": false,
     // allows all bots to speak through text-to-speech. 
     // specify speech model inside each profile with format: {provider}/{model}/{voice}.
     // if set to "system" it will use basic system text-to-speech. 
@@ -66,8 +66,9 @@ const settings = {
     "nav_chunk_threshold": 100, // distances >= this are navigated in chunks
     "nav_chunk_distance": 80,   // target chunk size (blocks)
     "nav_chunk_retry_limit": 2, // retries per chunk before giving up that chunk
+    "journeymap_bridge_url": "http://127.0.0.1:47892", // optional local JourneyMap companion bridge
 
-    "log_all_prompts": false, // log ALL prompts to file
+    "log_all_prompts": true, // log ALL prompts to file
     "transcript_logging": true, // append JSONL runtime transcript events to ./bots/{bot}/transcripts
     "transcript_include_prompts": false, // include full prompt bodies in transcript logs
     "transcript_include_code": true, // include generated action code in transcript logs

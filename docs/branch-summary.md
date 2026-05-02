@@ -1,6 +1,10 @@
 # Branch Summary
 
-This branch improves the bot's command selection, mining workflow, chest handling, and recovery behavior. The main goal is to make mining requests like "mine iron ore" reliably select mining commands, prepare the right supplies, avoid false success reports, and produce readable diagnostics when something goes wrong.
+This branch improves the bot's command selection, mining workflow, chest handling,
+recovery behavior, and typed situational memory. The main goals are to make
+requests like "mine iron ore" select the right commands, make repeated travel and
+storage workflows memory-backed, avoid false success reports, and produce
+readable diagnostics when something goes wrong.
 
 ## Example Selection
 
@@ -16,6 +20,55 @@ This branch improves the bot's command selection, mining workflow, chest handlin
   - Logs now include selected intent and assistant output.
 - Improved fallback word-overlap scoring with stopword removal, token deduping, player/bot-name filtering, and Minecraft/action keyword boosts.
 - Added mining/toolchain examples to the default profile, including `!planMiningRun`, `!mineOre`, `!prepareMiningRun`, `!depositAll`, and `!craftToolchainFor`.
+- Added JourneyMap, route, and storage examples so natural-language requests can select `!syncJourneyMap`, `!importJourneyMapLocation`, `!goToWaypoint`, `!startRouteRecording`, `!followRoute`, `!labelNearestStorage`, `!findInStorage`, and `!restockFromStorage`.
+
+## Situational Memory
+
+- Replaced the old flat `MemoryBank` map with typed world memory.
+- Old saved memory still migrates safely:
+  - old `{ "base": [10, 64, -20] }` loads as `places.base`.
+  - `rememberPlace()` and `recallPlace()` remain compatible with existing command logic.
+- Added generic typed memory methods:
+  - `remember(type, key, value)`
+  - `recall(type, key)`
+  - `list(type)`
+  - `search(type, query)`
+- Persisted typed memory through `History.save/load` in `bots/{bot}/memory.json`.
+- Added namespaces for `places`, `journeymap.waypoints`, `routes`, `storage`, `observations`, and `pending`.
+- Added focused docs in `docs/situational-memory.md`.
+
+## JourneyMap Integration
+
+- Added optional JourneyMap bridge helpers and commands:
+  - `!syncJourneyMap`
+  - `!importJourneyMapLocation`
+  - `!journeyMapWaypoints`
+  - `!goToWaypoint`
+  - `!exportWaypoint`
+- Added parser support for pasted JourneyMap location strings with reordered fields, such as `[z:-20, name:base, x:10, dim:0, y:64]`.
+- Missing `x` or `z` is rejected with structured failure output.
+- Bridge failures return `journeymap_bridge_unavailable` and recommend the pasted-location fallback.
+- Added an optional localhost bridge scaffold under `services/journeymap-bridge/`.
+
+## Route Memory
+
+- Added route recording and following commands:
+  - `!startRouteRecording`
+  - `!stopRouteRecording`
+  - `!followRoute`
+  - `!routeStatus`
+  - `!continueRoute`
+- Routes store ordered breadcrumbs, start/end records, dimension, timestamps, linked waypoint metadata, and last failure.
+- Route following uses non-destructive pathfinding by default.
+- Blocked routes save `pending.route_issue` and stop before digging.
+- `!continueRoute(name, "allow_dig_once")` only permits digging for the current blocked segment and then expires.
+- Route failure output uses structured reasons such as `route_blocked`, `interrupted`, and `dimension_mismatch`.
+
+## Event-Triggered Vision
+
+- Added `!observeHere(reason)` to capture one screenshot summary when vision is enabled.
+- Route failures capture one observation only when `allow_vision` is enabled.
+- Normal route following does not take periodic screenshots.
 
 ## Mining Workflow
 
@@ -41,6 +94,15 @@ This branch improves the bot's command selection, mining workflow, chest handlin
 - Remembered the last storage block successfully found/opened so `!setHomeChest` and mining can fall back to it if a later block scan misses the nearby chest.
 - Fixed the case where `!takeFromChest` could open a chest, but `!setHomeChest` immediately afterwards said no chest existed nearby.
 - Reworked `!viewChest` output to aggregate item totals by item type instead of logging every stack. Full chests now produce complete, compact summaries that avoid truncating the middle of the inventory.
+- Added memory-backed storage logistics commands:
+  - `!labelNearestStorage`
+  - `!indexStorage`
+  - `!indexStorageArea`
+  - `!findInStorage`
+  - `!restockFromStorage`
+- Storage indexes are stale-cache records and report the last index time.
+- `!restockFromStorage` withdraws available partial amounts, reports shortfall, and refreshes that container's index.
+- `!organizeStorage` remains intentionally deferred; this branch does not move items between containers.
 
 Example new chest output:
 
@@ -64,15 +126,25 @@ The chest contains 54 stacks across 27 item types:
   - Looks for nearby dry, standable positions and navigates laterally to them.
   - Falls back to moving away instead of just jumping straight up and down.
 
+## Command Response Handling
+
+- Replaced first-command truncation in `Agent.handleMessage()` with explicit command-span extraction.
+- Model responses that contain multiple commands now queue and execute valid commands serially in source order.
+- The full assistant response is preserved in history so emitted plans and trailing commands are observable.
+- Invalid or hallucinated commands stop the current queue and feed an error back into the prompt loop instead of silently dropping later text.
+- Updated conversation prompts and command docs to tell the model to use at most one command per response and wait for command results before issuing the next command.
+
 ## Tooling And Tests
 
 - Added focused tests for example normalization, fallback selection, embedding failures, selection stability, and logging.
 - Added tests for storage lookup, last-known chest fallback, mining planning helpers, objective result formatting, and aggregated chest content formatting.
+- Added tests for memory migration and persistence, JourneyMap location parsing, route issue records, breadcrumb thresholds, and storage index search.
+- Added tests for command extraction and multi-command `Agent.handleMessage()` responses.
 - Current verification after these changes:
 
 ```text
 npm test
-81 tests passed
+107 tests passed
 ```
 
 ## Operational Notes

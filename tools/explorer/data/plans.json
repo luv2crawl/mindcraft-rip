@@ -1,4 +1,19 @@
 {
-  "updatedAt": "2026-05-01T04:20:54.737Z",
-  "cards": []
+  "updatedAt": "2026-05-02T03:41:46.863Z",
+  "cards": [
+    {
+      "id": "c_3swv3637",
+      "title": "Decide on multi-command-per-response policy and tell the model",
+      "body": "agent.handleMessage uses truncCommandMessage(res) and silently drops anything after the first command. Either parse-and-queue all commands serially or explicitly tell the model 'only one command per response' in profile.conversing. Picking one stops the current quiet drift where the model emits plans the runtime ignores.\n\nTouches: Agent.handleMessage, commands/index.js containsCommand, profile.conversing prompt\nLinks:\n- https://www.anthropic.com/engineering/writing-tools-for-agents",
+      "status": "inprogress",
+      "tags": [
+        "quick-win",
+        "agent-handlemessage",
+        "commands-index-js-containscomm"
+      ],
+      "sourceLink": "https://www.anthropic.com/engineering/writing-tools-for-agents",
+      "createdAt": "2026-05-02T03:39:14.273Z",
+      "updatedAt": "2026-05-02T03:41:46.863Z"
+    }
+  ]
 }

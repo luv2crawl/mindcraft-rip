@@ -26,15 +26,16 @@ Each time you send a message, the bot rebuilds its context from scratch:
 
 1. The system prompt is template-rendered with **fresh** `$STATS` (position, health, hunger, time, biome, weather, nearby players), `$INVENTORY`, `$NEARBY_BLOCKS`, `$COMMAND_DOCS` (the full command catalog), `$EXAMPLES` (top-K few-shot examples retrieved by similarity to your message), and `$MEMORY` (a running 500-char summary).
 2. The model writes a free-form reply that may contain a command in the form `!commandName("arg1", 1.5)`.
-3. The harness extracts the command, **type-checks the arguments**, runs it, and feeds the output back in as a `system` message.
-4. The bot can chain commands — it iterates up to `max_commands` times per message (set in `settings.js`, currently `-1` for unlimited).
-5. Independently, every 300 ms a "modes" loop reacts to the world (running from lava, fighting back, picking up items, etc.); whatever it does is appended to a behavior log that the bot sees on your *next* message.
+3. The harness extracts command spans, **type-checks the arguments**, runs valid commands serially, and feeds each output back in as a `system` message.
+4. The prompt tells the model to use at most one command per response. If it emits more than one anyway, the runtime no longer silently drops the later commands; it queues them in source order and stops the queue on the first invalid, interrupted, failed, or empty-result command.
+5. The bot can chain commands across model turns: after command output is added to history, it may prompt the model again, up to `max_commands` times per message (set in `settings.js`, currently `-1` for unlimited).
+6. Independently, every 300 ms a "modes" loop reacts to the world (running from lava, fighting back, picking up items, etc.); whatever it does is appended to a behavior log that the bot sees on your *next* message.
 
 Implications worth knowing:
 
 - **The bot has no persistent world model.** Its only "memory" is the 500-char summary, the chat history, and the named places saved via `!rememberHere`. Everything else is recomputed each turn.
 - **Type checks are strict.** `!collectBlocks("oak_log", "ten")` fails because `num` is `int`. So does `!goToCoordinates(0, 500, 0, 1)` because Y must be in `[-64, 320]`. The bot sees the validation error and usually corrects on the next attempt.
-- **Skill output drives chained reasoning.** When the bot runs `!searchForBlock("oak_log", 64)` and the system replies "Could not find any oak_log in 64 blocks," the bot will often follow up with `!searchForBlock("oak_log", 128)` — the chained tool-use loop is what makes multi-step tasks work without re-prompting.
+- **Command output drives chained reasoning.** When the bot runs `!searchForBlock("oak_log", 64)` and the system replies "Could not find any oak_log in 64 blocks," the bot will often follow up with `!searchForBlock("oak_log", 128)`. The command-result loop is what makes multi-step tasks work without manual re-prompting.
 - **Modes can interrupt.** `self_preservation`, `self_defense`, `cowardice`, and `unstuck` interrupt **any** action. `hunting`, `item_collecting`, `torch_placing`, and `elbow_room` only interrupt `!followPlayer` (and the new chunked navigation in `!goToRememberedPlace`/`!mineOre`, which suspends the distracting ones for the duration).
 
 ## Phrasing patterns
@@ -267,7 +268,7 @@ Re-enable when done:
 - **`!digDown` is technically allowed.** It exists for emergencies and is not what you want for mining — `!mineOre` does proper 2-tall corridors with torches.
 - **`!collectBlocks` doesn't place torches.** It uses a greedy nearest-block scan with no pattern. Fine for surface trees and stone, bad for ores at depth (use `!mineOre`).
 - **Big distances in coordinate-style commands can fail silently in single-pathfind mode.** `!goToCoordinates(...)` doesn't currently route through chunked nav (only `!goToRememberedPlace` does); if you have a far destination, save it first and use `!goToRememberedPlace`.
-- **The bot can chain commands but won't do unbounded planning per turn.** For multi-step plans, use `!goal(...)`.
+- **Prefer one command at a time.** The runtime can recover if the model emits multiple commands in one response, but the prompt contract is still one command per response so each next step can use the previous command's output. For long-running multi-step plans, use `!goal(...)`.
 - **`only_chat_with` is exclusive.** If `settings.js` has `only_chat_with: ["mbarc"]`, the bot ignores everyone else. Useful when streaming or running a public server, but easy to forget.
 - **`!newAction` is disabled by default.** Set `allow_insecure_coding: true` in `settings.js` to enable. The bot can write and run arbitrary JS in the bot process — only enable on trusted machines.
 

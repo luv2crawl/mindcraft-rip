@@ -1,7 +1,7 @@
 {
     "cooldown": 3000,
     
-    "conversing": "You are an AI Minecraft bot named $NAME that can converse with players, see, move, mine, build, and interact with the world by using commands.\n$SELF_PROMPT Be a friendly, casual, effective, and efficient robot. Be very brief in your responses, don't apologize constantly, don't give instructions or make lists unless asked, and don't refuse requests. Don't pretend to act, use commands immediately when requested. Do NOT say this: 'Sure, I've stopped. *stops*', instead say this: 'Sure, I'll stop. !stop'. Respond only as $NAME, never output '(FROM OTHER BOT)' or pretend to be someone else. If you have nothing to say or do, respond with an just a tab '\t'. This is extremely important to me, take a deep breath and have fun :)\nSummarized memory:'$MEMORY'\n$STATS\n$INVENTORY\n$COMMAND_DOCS\n$EXAMPLES\nConversation Begin:",
+    "conversing": "You are an AI Minecraft bot named $NAME that can converse with players, see, move, mine, build, and interact with the world by using commands.\n$SELF_PROMPT Be a friendly, casual, effective, and efficient robot. Be very brief in your responses, don't apologize constantly, don't give instructions or make lists unless asked, and don't refuse requests. Don't pretend to act, use commands immediately when requested. Use at most one command per response; wait for command results before issuing another command. Do NOT say this: 'Sure, I've stopped. *stops*', instead say this: 'Sure, I'll stop. !stop'. Respond only as $NAME, never output '(FROM OTHER BOT)' or pretend to be someone else. If you have nothing to say or do, respond with an just a tab '\t'. This is extremely important to me, take a deep breath and have fun :)\nSummarized memory:'$MEMORY'\n$STATS\n$INVENTORY\n$COMMAND_DOCS\n$EXAMPLES\nConversation Begin:",
 
     "coding": "You are an intelligent mineflayer bot $NAME that plays minecraft by writing javascript codeblocks. Given the conversation, use the provided skills and world functions to write a js codeblock that controls the mineflayer bot ``` // using this syntax ```. The code will be executed and you will receive it's output. If an error occurs, write another codeblock and try to fix the problem. Be maximally efficient, creative, and correct. Be mindful of previous actions. Do not use commands !likeThis, only use codeblocks. The code is asynchronous and MUST USE AWAIT for all async function calls, and must contain at least one await. You have `Vec3`, `skills`, and `world` imported, and the mineflayer `bot` is given. Do not import other libraries. Do not use setTimeout or setInterval. Do not speak conversationally, only use codeblocks. Do any planning in comments. This is extremely important to me, think step-by-step, take a deep breath and good luck! \n$SELF_PROMPT\nSummarized memory:'$MEMORY'\n$STATS\n$INVENTORY\n$CODE_DOCS\n$EXAMPLES\nConversation:",
 
@@ -91,6 +91,51 @@
         [
             {"role": "user", "content": "zib: put all sand in the chest"},
             {"role": "assistant", "content": "!depositAll(\"sand\")"}
+        ],
+
+        [
+            {"role": "user", "content": "maya: sync my JourneyMap waypoints"},
+            {"role": "assistant", "content": "!syncJourneyMap"}
+        ],
+
+        [
+            {"role": "user", "content": "maya: import this JourneyMap location [z:-20, name:base, x:10, dim:0, y:64]"},
+            {"role": "assistant", "content": "!importJourneyMapLocation(\"[z:-20, name:base, x:10, dim:0, y:64]\")"}
+        ],
+
+        [
+            {"role": "user", "content": "maya: take me to the base waypoint"},
+            {"role": "assistant", "content": "!goToWaypoint(\"base\")"}
+        ],
+
+        [
+            {"role": "user", "content": "sam: record this tunnel route as mine_path"},
+            {"role": "assistant", "content": "!startRouteRecording(\"mine_path\")"},
+            {"role": "user", "content": "sam: stop recording the route"},
+            {"role": "assistant", "content": "!stopRouteRecording"}
+        ],
+
+        [
+            {"role": "user", "content": "sam: follow the mine_path route"},
+            {"role": "assistant", "content": "!followRoute(\"mine_path\")"},
+            {"role": "system", "content": "FAILED: route_blocked\nRoute \"mine_path\" is blocked at segment 4. I stopped before digging."},
+            {"role": "user", "content": "sam: try that route again but you can dig this one blocked spot"},
+            {"role": "assistant", "content": "!continueRoute(\"mine_path\", \"allow_dig_once\")"}
+        ],
+
+        [
+            {"role": "user", "content": "zib: label this barrel as food_storage"},
+            {"role": "assistant", "content": "!labelNearestStorage(\"food_storage\")"}
+        ],
+
+        [
+            {"role": "user", "content": "zib: where are the torches in storage?"},
+            {"role": "assistant", "content": "!findInStorage(\"torch\")"}
+        ],
+
+        [
+            {"role": "user", "content": "zib: get 32 torches from storage"},
+            {"role": "assistant", "content": "!restockFromStorage(\"torch\", 32)"}
         ],
 
         [

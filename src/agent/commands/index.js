@@ -27,13 +27,24 @@ export function blacklistCommands(commands) {
 }
 
 const commandRegex = /!(\w+)(?:\(((?:-?\d+(?:\.\d+)?|true|false|"[^"]*")(?:\s*,\s*(?:-?\d+(?:\.\d+)?|true|false|"[^"]*"))*)\))?/
+const commandGlobalRegex = new RegExp(commandRegex.source, 'g');
 const argRegex = /-?\d+(?:\.\d+)?|true|false|"[^"]*"/g;
 
 export function containsCommand(message) {
-    const commandMatch = message.match(commandRegex);
-    if (commandMatch)
-        return "!" + commandMatch[1];
-    return null;
+    return extractCommandMessages(message)[0]?.commandName ?? null;
+}
+
+export function extractCommandMessages(message) {
+    const commands = [];
+    for (const commandMatch of message.matchAll(commandGlobalRegex)) {
+        commands.push({
+            commandName: "!" + commandMatch[1],
+            commandText: commandMatch[0],
+            index: commandMatch.index,
+            endIndex: commandMatch.index + commandMatch[0].length
+        });
+    }
+    return commands;
 }
 
 export function commandExists(commandName) {
@@ -173,14 +184,6 @@ export function parseCommandMessage(message) {
     return { commandName, args };
 }
 
-export function truncCommandMessage(message) {
-    const commandMatch = message.match(commandRegex);
-    if (commandMatch) {
-        return message.substring(0, commandMatch.index + commandMatch[0].length);
-    }
-    return message;
-}
-
 export function isAction(name) {
     return actionsList.find(action => action.name === name) !== undefined;
 }
@@ -270,7 +273,7 @@ export function getCommandDocs(agent) {
     }
     let docs = `\n*COMMAND DOCS\n You can use the following commands to perform actions and get information about the world. 
     Use the commands with the syntax: !commandName or !commandName("arg1", 1.2, ...) if the command takes arguments.\n
-    Do not use codeblocks. Use double quotes for strings. Only use one command in each response, trailing commands and comments will be ignored.\n`;
+    Do not use codeblocks. Use double quotes for strings. Use at most one command in each response; wait for the command result before issuing the next command.\n`;
     for (let command of commandList) {
         if (agent.blocked_actions.includes(command.name)) {
             continue;

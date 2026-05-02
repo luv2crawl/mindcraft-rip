@@ -5,6 +5,7 @@ import convoManager from '../conversation.js';
 import { checkLevelBlueprint, checkBlueprint } from '../tasks/construction_tasks.js';
 import { load } from 'cheerio';
 import { formatMiningPlan, planMiningRun } from '../objectives/mining_objective.js';
+import { objectiveResult, formatObjectiveResult } from '../objectives/objective_results.js';
 
 const pad = (str) => {
     return '\n' + str + '\n';
@@ -245,6 +246,32 @@ export const queryList = [
             return "Saved place names: " + agent.memory_bank.getKeys();
         }
     }, 
+    {
+        name: '!journeyMapWaypoints',
+        description: 'List imported JourneyMap waypoints compactly.',
+        perform: async function (agent) {
+            const waypoints = agent.memory_bank.list('journeymap.waypoints');
+            const names = Object.keys(waypoints);
+            if (names.length === 0) {
+                return formatObjectiveResult(objectiveResult({
+                    ok: false,
+                    reason: 'no_journeymap_waypoints',
+                    message: 'No JourneyMap waypoints are imported.',
+                    recommendedCommands: ['!syncJourneyMap', '!importJourneyMapLocation("[x:10, y:64, z:-20, dim:0, name:base]")'],
+                }));
+            }
+            const lines = names.sort().slice(0, 20).map(name => {
+                const wp = waypoints[name];
+                return `${name}: (${wp.x}, ${wp.y ?? '?'}, ${wp.z}) dim:${wp.dimension ?? '?'}`;
+            });
+            return formatObjectiveResult(objectiveResult({
+                ok: true,
+                reason: 'ok',
+                message: `JourneyMap waypoints:\n${lines.join('\n')}`,
+                data: { count: names.length },
+            }));
+        }
+    },
     {
         name: '!checkBlueprintLevel',
         description: 'Check if the level is complete and what blocks still need to be placed for the blueprint',
