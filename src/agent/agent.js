@@ -393,7 +393,7 @@ export class Agent {
                             command_name,
                             response: res
                         }, 'agent');
-                        break;
+                        continue;
                     }
 
                     if (checkInterrupt()) {
@@ -623,6 +623,7 @@ export class Agent {
             msg,
             code
         }, 'agent');
+        this.transcript?.flushSync?.();
         process.exit(code);
     }
     async checkTaskDone() {

@@ -1653,17 +1653,7 @@ export async function goToPositionChunked(bot, x, y, z, min_distance=2) {
                 return await goToPosition(bot, x, y, z, min_distance);
             }
 
-            // Pick a waypoint chunkDist blocks toward target along the XZ vector;
-            // keep the current Y so the pathfinder finds whatever standable elevation is nearby.
-            const dx = target.x - here.x;
-            const dz = target.z - here.z;
-            const planar = Math.sqrt(dx * dx + dz * dz);
-            const scale = planar > 0 ? Math.min(chunkDist, planar) / planar : 0;
-            const wp = new Vec3(
-                Math.round(here.x + dx * scale),
-                Math.round(here.y),
-                Math.round(here.z + dz * scale)
-            );
+            const wp = _interpolateChunkWaypoint(here, target, chunkDist);
             log(bot, `Chunk waypoint (${wp.x}, ${wp.y}, ${wp.z}); ${Math.round(remaining)} blocks remaining.`);
 
             const goal = new pf.goals.GoalNear(wp.x, wp.y, wp.z, 5);
@@ -1696,6 +1686,18 @@ export async function goToPositionChunked(bot, x, y, z, min_distance=2) {
         log(bot, `Long-distance navigation safety limit (${MAX_CHUNKS} chunks) reached.`);
         return false;
     });
+}
+
+export function _interpolateChunkWaypoint(here, target, chunkDist) {
+    const dx = target.x - here.x;
+    const dz = target.z - here.z;
+    const planar = Math.sqrt(dx * dx + dz * dz);
+    const scale = planar > 0 ? Math.min(chunkDist, planar) / planar : 0;
+    return new Vec3(
+        Math.round(here.x + dx * scale),
+        Math.round(here.y + (target.y - here.y) * scale),
+        Math.round(here.z + dz * scale)
+    );
 }
 
 export async function goToNearestBlock(bot, blockType,  min_distance=2, range=64) {
@@ -2701,7 +2703,7 @@ export async function depositMiningLoot(bot, oreName) {
     const oreInfo = getOreInfo(oreName);
     if (!oreInfo) {
         log(bot, `Unknown ore: ${oreName}. Known: ${getKnownOres().join(', ')}.`);
-        return { ok: false, reason: 'unknown_ore', mined: 0, target: num };
+        return { ok: false, reason: 'unknown_ore', mined: 0 };
     }
     const dropList = ((ORE_DROPS[oreInfo.key] || []).concat(SPOIL_BLOCKS));
     return await _depositNamedItemsInNearestChest(bot, dropList);
@@ -2802,6 +2804,7 @@ function _filterPositiveCounts(counts) {
 function _miningNeedFor(oreInfo, oreName, currentY) {
     const targetY = getBestY(oreName, Math.floor(currentY));
     const deepMining = typeof targetY === 'number' && targetY < 0;
+    const undergroundMining = typeof targetY === 'number' && targetY < 60;
     const desiredPickaxes = deepMining || MINING_TIER_RANK[oreInfo.min_pickaxe] >= MINING_TIER_RANK.iron ? 3 : 2;
     const minTier = oreInfo.min_pickaxe;
     const targetPickaxe = MINING_PICKAXE_BY_TIER[minTier] || `${minTier}_pickaxe`;
@@ -2809,10 +2812,10 @@ function _miningNeedFor(oreInfo, oreName, currentY) {
         [targetPickaxe]: desiredPickaxes,
         crafting_table: 1,
     };
-    if (deepMining || MINING_TIER_RANK[minTier] >= MINING_TIER_RANK.iron) {
+    if (undergroundMining) {
         need.torch = 32;
     }
-    return { targetY, deepMining, desiredPickaxes, minTier, targetPickaxe, need };
+    return { targetY, deepMining, undergroundMining, desiredPickaxes, minTier, targetPickaxe, need };
 }
 
 export function buildMiningPlanFromInventory(oreName, num, inventory, options = {}) {
@@ -3152,9 +3155,9 @@ export async function branchMineStep(bot, dirVec, oreName) {
         return null;
     }
 
-    await breakBlockAt(bot, ax, ay + 1, az);
-    if (bot.interrupt_code) return null;
     await breakBlockAt(bot, ax, ay, az);
+    if (bot.interrupt_code) return null;
+    await breakBlockAt(bot, ax, ay + 1, az);
     if (bot.interrupt_code) return null;
 
     // Re-read post-break: only treat as failure if blocks are still solid (truly unbreakable).
@@ -3227,9 +3230,9 @@ async function _staircaseStepDown(bot, dirVec, oreNamesToScan) {
         return false;
     }
 
-    await breakBlockAt(bot, nx, ny + 1, nz);
-    if (bot.interrupt_code) return false;
     await breakBlockAt(bot, nx, ny, nz);
+    if (bot.interrupt_code) return false;
+    await breakBlockAt(bot, nx, ny + 1, nz);
     if (bot.interrupt_code) return false;
 
     const headAfter = bot.blockAt(new Vec3(nx, ny + 1, nz));

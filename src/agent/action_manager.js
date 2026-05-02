@@ -147,12 +147,13 @@ export class ActionManager {
             // Log the full stack trace
             console.error(err.stack);
             await this.stop();
-            err = err.toString();
+            const errString = err?.toString?.() || String(err);
+            const stack = err?.stack || '';
 
             let message = this.getBotOutputSummary() +
                 '!!Code threw exception!!\n' +
-                'Error: ' + err + '\n' +
-                'Stack trace:\n' + err.stack+'\n';
+                'Error: ' + errString + '\n' +
+                'Stack trace:\n' + stack + '\n';
 
             let interrupted = this.agent.bot.interrupt_code;
             this.agent.clearBotLogs();
@@ -162,7 +163,7 @@ export class ActionManager {
             }
             this.agent.transcript?.record('action.failure', {
                 actionLabel,
-                error: err,
+                error: errString,
                 message,
                 interrupted
             }, 'action_manager');

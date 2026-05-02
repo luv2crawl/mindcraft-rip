@@ -29,6 +29,7 @@ export function blacklistCommands(commands) {
 const commandRegex = /!(\w+)(?:\(((?:-?\d+(?:\.\d+)?|true|false|"[^"]*")(?:\s*,\s*(?:-?\d+(?:\.\d+)?|true|false|"[^"]*"))*)\))?/
 const commandGlobalRegex = new RegExp(commandRegex.source, 'g');
 const argRegex = /-?\d+(?:\.\d+)?|true|false|"[^"]*"/g;
+const MAX_TRANSCRIPT_RESULT_CHARS = 4000;
 
 export function containsCommand(message) {
     return extractCommandMessages(message)[0]?.commandName ?? null;
@@ -245,19 +246,29 @@ export async function executeCommand(agent, message) {
                 agent.transcript?.record('command.end', {
                     commandName: parsed.commandName,
                     duration_ms: Date.now() - start,
-                    result
+                    result: _truncateTranscriptValue(result)
                 }, 'commands');
                 return result;
             } catch (error) {
                 agent.transcript?.record('command.failure', {
                     commandName: parsed.commandName,
                     duration_ms: Date.now() - start,
-                    error: error?.message || String(error)
+                    error: _truncateTranscriptValue(error)
                 }, 'commands');
                 throw error;
             }
         }
     }
+}
+
+function _truncateTranscriptValue(value) {
+    if (typeof value !== 'string') return value;
+    if (value.length <= MAX_TRANSCRIPT_RESULT_CHARS) return value;
+    return {
+        text: value.slice(0, MAX_TRANSCRIPT_RESULT_CHARS),
+        truncated: true,
+        original_length: value.length
+    };
 }
 
 export function getCommandDocs(agent) {

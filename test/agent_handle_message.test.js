@@ -82,18 +82,18 @@ describe('Agent.handleMessage command responses', () => {
         assert.deepEqual(routed, ['I will check.  !help', '!help']);
     });
 
-    test('does not execute later queued commands after a hallucinated command', async () => {
+    test('executes later queued commands after a hallucinated command', async () => {
         const { agent, historyEntries } = makeAgent('Bad command first. !notACommand Then !help');
 
         const usedCommand = await withQuietConsole(() => agent.handleMessage('system', 'try commands', 1));
 
-        assert.equal(usedCommand, false);
+        assert.equal(usedCommand, true);
         assert.ok(historyEntries.some(entry =>
             entry.role === 'system' && entry.content === 'Command !notACommand does not exist.'
         ));
         assert.equal(historyEntries.filter(entry =>
             entry.role === 'system' && entry.content.includes('*COMMAND DOCS')
-        ).length, 0);
+        ).length, 1);
     });
 
     test('stores the full assistant response instead of truncating after the first command', async () => {

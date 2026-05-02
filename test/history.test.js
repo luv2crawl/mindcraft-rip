@@ -54,4 +54,46 @@ describe('History memory summarization', () => {
             setSettings({ memory_summary_timeout_ms: originalTimeout });
         }
     });
+
+    test('requeues evicted turns when summarization fails', async () => {
+        const originalTimeout = settings.memory_summary_timeout_ms;
+        settings.memory_summary_timeout_ms = 5;
+        try {
+            const events = [];
+            const history = Object.create(History.prototype);
+            history.memory = 'old memory';
+            history.turns = [];
+            history.max_messages = 3;
+            history.summary_chunk_size = 2;
+            history.pending_summary = Promise.resolve();
+            history.summary_in_progress = false;
+            history.appendFullHistory = async () => {};
+            history.name = 'bot';
+            history.agent = {
+                name: 'bot',
+                transcript: {
+                    record: (...args) => events.push(args)
+                },
+                prompter: {
+                    promptMemSaving: () => Promise.reject(new Error('nope'))
+                }
+            };
+
+            await history.add('player', 'one');
+            await history.add('player', 'two');
+            await history.add('player', 'three');
+            await history.pending_summary;
+
+            assert.equal(history.memory, 'old memory');
+            assert.equal(history.turns.length, 3);
+            assert.deepEqual(history.turns.map(turn => turn.content), [
+                'player: one',
+                'player: two',
+                'player: three'
+            ]);
+            assert.ok(events.some(event => event[0] === 'memory.summary.requeued'));
+        } finally {
+            setSettings({ memory_summary_timeout_ms: originalTimeout });
+        }
+    });
 });

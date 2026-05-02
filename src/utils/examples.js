@@ -2,7 +2,11 @@ import { cosineSimilarity } from './math.js';
 import { stringifyTurns, wordOverlapScore } from './text.js';
 
 function stripSpeakerPrefix(text) {
-    return String(text ?? '').replace(/^[a-zA-Z0-9_ -]{1,32}:\s*/, '');
+    const value = String(text ?? '');
+    const match = value.match(/^([A-Za-z0-9_]{1,16}):\s+/);
+    if (!match) return value;
+    if (['goal', 'stage', 'warning'].includes(match[1].toLowerCase())) return value;
+    return value.slice(match[0].length);
 }
 
 export function normalizeIntentText(text) {
@@ -17,17 +21,20 @@ export function normalizeIntentText(text) {
         .trim();
 }
 
-export function latestIntentText(turns) {
+export function latestIntentText(turns, fallbackIntent = '') {
     const latestUser = [...turns].reverse().find(turn => turn.role === 'user');
     if (latestUser)
         return normalizeIntentText(latestUser.content);
 
+    if (fallbackIntent)
+        return normalizeIntentText(String(fallbackIntent).slice(-200));
+
     const latestSystem = [...turns].reverse().find(turn => turn.role === 'system');
     if (latestSystem)
-        return normalizeIntentText(latestSystem.content);
+        return normalizeIntentText(String(latestSystem.content).slice(-200));
 
     const latestNonAssistant = [...turns].reverse().find(turn => turn.role !== 'assistant');
-    return latestNonAssistant ? normalizeIntentText(latestNonAssistant.content) : '';
+    return latestNonAssistant ? normalizeIntentText(String(latestNonAssistant.content).slice(-200)) : '';
 }
 
 export function exampleIntentText(example) {
@@ -63,11 +70,13 @@ function assistantOutputText(example) {
 }
 
 export class Examples {
-    constructor(model, select_num=2) {
+    constructor(model, select_num=2, agent=null) {
         this.examples = [];
         this.model = model;
         this.select_num = select_num;
-        this.embeddings = {};
+        this.agent = agent;
+        this.embeddings = [];
+        this.exampleIndices = new WeakMap();
     }
 
     exampleIntentText(example) {
@@ -75,7 +84,7 @@ export class Examples {
     }
 
     latestIntentText(turns) {
-        return latestIntentText(turns);
+        return latestIntentText(turns, this.agent?.self_prompter?.prompt || '');
     }
 
     assistantOutputText(example) {
@@ -91,6 +100,8 @@ export class Examples {
 
     async load(examples) {
         this.examples = examples;
+        this.exampleIndices = new WeakMap();
+        examples.forEach((example, index) => this.exampleIndices.set(example, index));
         if (!this.model) return; // Early return if no embedding model
         
         if (this.select_num === 0)
@@ -98,11 +109,11 @@ export class Examples {
 
         try {
             // Create array of promises first
-            const embeddingPromises = examples.map(example => {
+            const embeddingPromises = examples.map((example, index) => {
                 const turn_text = this.exampleIntentText(example);
                 return this.model.embed(turn_text)
                     .then(embedding => {
-                        this.embeddings[turn_text] = embedding;
+                        this.embeddings[index] = embedding;
                     });
             });
             
@@ -137,8 +148,8 @@ export class Examples {
     }
 
     embeddingScore(queryEmbedding, queryText, example) {
-        const intent = this.exampleIntentText(example);
-        const exampleEmbedding = this.embeddings[intent];
+        const index = this.exampleIndices.get(example);
+        const exampleEmbedding = index === undefined ? null : this.embeddings[index];
         if (!exampleEmbedding)
             return this.fallbackScore(queryText, example);
 

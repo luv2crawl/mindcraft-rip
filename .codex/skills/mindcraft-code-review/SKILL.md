@@ -1,6 +1,16 @@
 ---
 name: mindcraft-code-review
-description: Run a structured code review of the Mindcraft Minecraft-bot repo. Produces a categorized findings report (severity + effort + type), prints a summary to the terminal, and writes the full report to docs/code-review/<timestamp>.md. Use this skill whenever the user asks for a "code review", "audit the codebase", "review my branch", "check for bugs", "review the changes", "look over my code", "code health check", "find issues in the bot", or anything similar — even when they don't say the word "skill". Also trigger when the user asks to find performance regressions, design problems, fragile code, or things that need refactoring in the bot. Supports two modes: a full-repo audit, or a branch-only review (only files that differ from main).
+description: >-
+  Run a structured code review of the Mindcraft Minecraft-bot repo. Produces a
+  categorized findings report (severity + effort + type), prints a summary to
+  the terminal, and writes the full report to docs/code-review/<timestamp>.md.
+  Use this skill whenever the user asks for a "code review", "audit the
+  codebase", "review my branch", "check for bugs", "review the changes", "look
+  over my code", "code health check", "find issues in the bot", or anything
+  similar - even when they do not say the word "skill". Also trigger when the
+  user asks to find performance regressions, design problems, fragile code, or
+  things that need refactoring in the bot. Supports two modes: a full-repo
+  audit, or a branch-only review (only files that differ from main).
 ---
 
 # Mindcraft Code Review

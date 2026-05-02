@@ -3,6 +3,7 @@ import assert from 'node:assert/strict';
 
 import { ObjectiveStack } from '../src/agent/objectives/objective_stack.js';
 import { objectiveResult, formatObjectiveResult } from '../src/agent/objectives/objective_results.js';
+import { runMiningObjective } from '../src/agent/objectives/mining_objective.js';
 
 test('ObjectiveStack pushes, peeks, updates, pops, and clears frames', () => {
     const events = [];
@@ -58,4 +59,28 @@ test('formatObjectiveResult emits scalar result data', () => {
     assert.match(formatted, /FAILED: partial/);
     assert.match(formatted, /Data: mined: 0, target: 30, exitReason: max steps \(500\) reached/);
     assert.doesNotMatch(formatted, /nested/);
+});
+
+test('ObjectiveStack.pop preserves explicit terminal status', () => {
+    const stack = new ObjectiveStack({ transcript: { record() {} } });
+    stack.push({ type: 'mine_ore', status: 'running' });
+    stack.updateTop({ status: 'failed' });
+
+    const popped = stack.pop(objectiveResult({ ok: true, reason: 'done' }));
+
+    assert.equal(popped.status, 'failed');
+});
+
+test('runMiningObjective pops frame on plan failure', async () => {
+    const stack = new ObjectiveStack({ transcript: { record() {} } });
+    const agent = {
+        bot: null,
+        objectives: stack,
+        transcript: { record() {} },
+    };
+
+    const result = await runMiningObjective(agent, 'unobtainium', 1);
+
+    assert.match(result, /FAILED: no_bot/);
+    assert.equal(stack.frames.length, 0);
 });

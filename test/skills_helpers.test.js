@@ -5,6 +5,7 @@ import {
     _directionToVec,
     _computePathfindTimeout,
     _goalApproxDistance,
+    _interpolateChunkWaypoint,
     _isStandingInBlockCell,
     _isPassableForCorridor,
     _isHazardousFluid,
@@ -96,6 +97,18 @@ describe('_goalApproxDistance', () => {
     test('rejects goals where any coord is non-numeric', () => {
         const bot = fakeBotAt(0, 0, 0);
         assert.equal(_goalApproxDistance(bot, { x: 1, y: 2, z: 'foo' }), null);
+    });
+});
+
+describe('_interpolateChunkWaypoint', () => {
+    test('interpolates Y along long planar movement', () => {
+        const waypoint = _interpolateChunkWaypoint(
+            new Vec3(0, 70, 0),
+            new Vec3(80, -50, 0),
+            40,
+        );
+
+        assert.deepEqual({ x: waypoint.x, y: waypoint.y, z: waypoint.z }, { x: 40, y: 10, z: 0 });
     });
 });
 
@@ -270,10 +283,23 @@ describe('mining supply helpers', () => {
         const plan = buildMiningPlanFromInventory('iron', 32, {
             stone_pickaxe: 2,
             crafting_table: 1,
+            torch: 32,
         }, { currentY: 64 });
 
         assert.equal(plan.ok, true);
         assert.equal(plan.reason, 'ready');
+    });
+
+    test('underground stone-tier mining plan requires torches', () => {
+        const plan = buildMiningPlanFromInventory('iron', 16, {
+            stone_pickaxe: 2,
+            crafting_table: 1,
+        }, { currentY: 64 });
+
+        assert.equal(plan.ok, false);
+        assert.equal(plan.reason, 'missing_supplies');
+        assert.equal(plan.need.torch, 32);
+        assert.equal(plan.missing.torch, 32);
     });
 
     test('mining plan treats craftable pickaxes as ready supplies', () => {

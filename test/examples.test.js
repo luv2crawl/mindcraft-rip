@@ -21,6 +21,11 @@ describe('example intent normalization', () => {
         assert.ok(wordOverlapScore(normalized, 'mine iron ore') > 0.8);
     });
 
+    test('does not strip non-speaker colon headings', () => {
+        assert.equal(normalizeIntentText('Goal: mine iron ore'), 'Goal mine iron ore');
+        assert.equal(normalizeIntentText('STAGE 1: gather wood'), 'STAGE 1 gather wood');
+    });
+
     test('mining requests score above social examples', () => {
         const miningIntent = 'mine some iron ore';
         const socialIntent = 'say hi to john_goodman';
@@ -58,6 +63,15 @@ describe('example intent normalization', () => {
         ]);
 
         assert.equal(intent, 'mine some iron ore');
+    });
+
+    test('latest intent prefers self prompt fallback over long system text', () => {
+        const intent = latestIntentText([
+            { role: 'system', content: 'You are a Minecraft bot. '.repeat(40) },
+            { role: 'assistant', content: 'OK.' }
+        ], 'mine iron ore');
+
+        assert.equal(intent, 'mine iron ore');
     });
 });
 
@@ -195,6 +209,31 @@ describe('example selection embedding failures', () => {
         const selected = await examples.getRelevant([{ role: 'user', content: 'bob: mine diamonds' }]);
 
         assert.match(outputs(selected), /!planMiningRun\("diamond", 10\)/);
+    });
+
+    test('duplicate normalized intents keep distinct embedding scores', async () => {
+        let loadIndex = 0;
+        const model = {
+            async embed(text) {
+                if (text === 'query diamond') return [0, 1];
+                return loadIndex++ === 0 ? [1, 0] : [0, 1];
+            }
+        };
+        const examples = new Examples(model, 1);
+        await examples.load([
+            [
+                { role: 'user', content: 'alice: duplicate intent' },
+                { role: 'assistant', content: 'first output' }
+            ],
+            [
+                { role: 'user', content: 'bob: duplicate intent' },
+                { role: 'assistant', content: 'second output' }
+            ]
+        ]);
+
+        const selected = await examples.getRelevant([{ role: 'user', content: 'query diamond' }]);
+
+        assert.match(outputs(selected), /second output/);
     });
 
     test('logs selected intent and assistant output', async () => {

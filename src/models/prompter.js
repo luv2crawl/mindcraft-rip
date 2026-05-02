@@ -111,8 +111,8 @@ export class Prompter {
 
     async initExamples() {
         try {
-            this.convo_examples = new Examples(this.embedding_model, settings.num_examples);
-            this.coding_examples = new Examples(this.embedding_model, settings.num_examples);
+            this.convo_examples = new Examples(this.embedding_model, settings.num_examples, this.agent);
+            this.coding_examples = new Examples(this.embedding_model, settings.num_examples, this.agent);
             
             // Wait for both examples to load before proceeding
             await Promise.all([
@@ -134,17 +134,22 @@ export class Prompter {
         }
     }
 
-    async replaceStrings(prompt, messages, examples=null, to_summarize=[], last_goals=null) {
+    async replaceStrings(prompt, messages, examples=null, to_summarize=[], last_goals=null, cachedReplacements=null) {
         prompt = prompt.replaceAll('$NAME', this.agent.name);
 
         if (prompt.includes('$STATS')) {
-            let stats = await getCommand('!stats').perform(this.agent) + '\n';
-            stats += await getCommand('!entities').perform(this.agent) + '\n';
-            stats += await getCommand('!nearbyBlocks').perform(this.agent);
+            let stats = await this._cachedReplacement(cachedReplacements, '$STATS', async () => {
+                let value = await getCommand('!stats').perform(this.agent) + '\n';
+                value += await getCommand('!entities').perform(this.agent) + '\n';
+                value += await getCommand('!nearbyBlocks').perform(this.agent);
+                return value;
+            });
             prompt = prompt.replaceAll('$STATS', stats);
         }
         if (prompt.includes('$INVENTORY')) {
-            let inventory = await getCommand('!inventory').perform(this.agent);
+            let inventory = await this._cachedReplacement(cachedReplacements, '$INVENTORY', async () => {
+                return await getCommand('!inventory').perform(this.agent);
+            });
             prompt = prompt.replaceAll('$INVENTORY', inventory);
         }
         if (prompt.includes('$ACTION')) {
@@ -162,8 +167,12 @@ export class Prompter {
                 await this.skill_libary.getRelevantSkillDocs(code_task_content, settings.relevant_docs_count)
             );
         }
-        if (prompt.includes('$EXAMPLES') && examples !== null)
-            prompt = prompt.replaceAll('$EXAMPLES', await examples.createExampleMessage(messages));
+        if (prompt.includes('$EXAMPLES') && examples !== null) {
+            const exampleMessage = await this._cachedReplacement(cachedReplacements, '$EXAMPLES', async () => {
+                return await examples.createExampleMessage(messages);
+            });
+            prompt = prompt.replaceAll('$EXAMPLES', exampleMessage);
+        }
         if (prompt.includes('$MEMORY'))
             prompt = prompt.replaceAll('$MEMORY', this.agent.history.memory);
         if (prompt.includes('$TO_SUMMARIZE'))
@@ -203,6 +212,14 @@ export class Prompter {
         return prompt;
     }
 
+    async _cachedReplacement(cache, key, createValue) {
+        if (!cache) return await createValue();
+        if (!cache.has(key)) {
+            cache.set(key, await createValue());
+        }
+        return cache.get(key);
+    }
+
     async checkCooldown() {
         let elapsed = Date.now() - this.last_prompt_time;
         if (elapsed < this.cooldown && this.cooldown > 0) {
@@ -214,6 +231,7 @@ export class Prompter {
     async promptConvo(messages) {
         this.most_recent_msg_time = Date.now();
         let current_msg_time = this.most_recent_msg_time;
+        const stableReplacements = new Map();
 
         for (let i = 0; i < 3; i++) { // try 3 times to avoid hallucinations
             await this.checkCooldown();
@@ -222,7 +240,7 @@ export class Prompter {
             }
 
             let prompt = this.profile.conversing;
-            prompt = await this.replaceStrings(prompt, messages, this.convo_examples);
+            prompt = await this.replaceStrings(prompt, messages, this.convo_examples, [], null, stableReplacements);
             let generation;
             const start = Date.now();
             this.agent.transcript?.record('model.request', {

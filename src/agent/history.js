@@ -25,6 +25,7 @@ export class History {
         // chunking reduces expensive calls to promptMemSaving and appendFullHistory
         // and improves the quality of the memory summary
         this.pending_summary = Promise.resolve();
+        this.summary_in_progress = false;
     }
 
     getHistory() { // expects an Examples object
@@ -49,7 +50,7 @@ export class History {
                 error: error?.message || String(error),
                 timeout_ms: timeoutMs
             }, 'history');
-            return;
+            return false;
         }
 
         if (this.memory.length > 500) {
@@ -61,6 +62,7 @@ export class History {
         this.agent.transcript?.record('memory.summary.end', {
             memory: this.memory
         }, 'history');
+        return true;
     }
 
     _withTimeout(promise, timeoutMs, timeoutMessage) {
@@ -101,16 +103,29 @@ export class History {
         }
         this.turns.push({role, content});
 
-        if (this.turns.length >= this.max_messages) {
+        if (this.turns.length >= this.max_messages && !this.summary_in_progress) {
             let chunk = this.turns.splice(0, this.summary_chunk_size);
             while (this.turns.length > 0 && this.turns[0].role === 'assistant')
                 chunk.push(this.turns.shift()); // remove until turns starts with system/user message
 
+            this.summary_in_progress = true;
             this.pending_summary = this.pending_summary
                 .catch(() => {})
-                .then(() => this.summarizeMemories(chunk))
+                .then(async () => {
+                    const summarized = await this.summarizeMemories(chunk);
+                    if (!summarized) {
+                        this.turns = chunk.concat(this.turns);
+                        this.agent.transcript?.record('memory.summary.requeued', {
+                            turn_count: chunk.length
+                        }, 'history');
+                    }
+                })
                 .catch((error) => {
                     console.error('Memory summary queue failed:', error?.message || error);
+                    this.turns = chunk.concat(this.turns);
+                })
+                .finally(() => {
+                    this.summary_in_progress = false;
                 });
             await this.appendFullHistory(chunk);
         }

@@ -27,7 +27,9 @@ export class ObjectiveStack {
         const frame = this.frames.pop() || null;
         if (frame) {
             frame.result = result ?? frame.result;
-            frame.status = frame.result?.ok === false ? 'failed' : 'completed';
+            if (frame.status !== 'completed' && frame.status !== 'failed') {
+                frame.status = frame.result?.ok === false ? 'failed' : 'completed';
+            }
             frame.updatedAt = Date.now();
             this.agent?.transcript?.record('objective.pop', frame, 'objectives');
         }
@@ -70,4 +72,3 @@ export class ObjectiveStack {
         return lines.join('\n');
     }
 }
-

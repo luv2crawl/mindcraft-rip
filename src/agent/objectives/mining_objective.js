@@ -24,12 +24,17 @@ export async function runMiningObjective(agent, oreName, num) {
         status: 'running',
     });
     const update = (state, patch = {}) => agent.objectives.updateTop({ state, status: 'running', ...patch });
+    const logResult = (result) => {
+        if (agent?.bot) skills.log(agent.bot, formatMiningPlan(result));
+    };
+    let finalResult = null;
     try {
         const plan = planMiningRun(agent, oreName, num);
         update('PLAN', { result: plan });
         if (!plan.ok && plan.reason !== 'missing_supplies') {
             agent.objectives.updateTop({ state: 'FAILED', status: 'failed', result: plan });
-            skills.log(agent.bot, formatMiningPlan(plan));
+            logResult(plan);
+            finalResult = plan;
             return formatMiningPlan(plan);
         }
 
@@ -44,7 +49,7 @@ export async function runMiningObjective(agent, oreName, num) {
         const target = typeof result === 'object' ? result.target : num;
         const reason = typeof result === 'object' ? result.reason : (result ? 'done' : 'failed');
         const details = typeof result === 'object' ? result.data : {};
-        const finalResult = objectiveResult({
+        finalResult = objectiveResult({
             ok: success,
             reason: success ? 'done' : reason,
             message: success
@@ -57,18 +62,34 @@ export async function runMiningObjective(agent, oreName, num) {
             status: finalResult.ok ? 'completed' : 'failed',
             result: finalResult,
         });
-        if (finalResult.ok) {
-            agent.objectives.pop(finalResult);
-        }
-        skills.log(agent.bot, formatMiningPlan(finalResult));
+        logResult(finalResult);
         return formatMiningPlan(finalResult);
     } catch (error) {
-        const failed = objectiveResult({
+        finalResult = objectiveResult({
             ok: false,
             reason: 'exception',
             message: `Mining objective threw: ${error?.message || String(error)}.`,
+            data: {
+                error: error?.message || String(error),
+            },
         });
-        agent.objectives.updateTop({ state: 'FAILED', status: 'failed', result: failed, error: failed.message });
-        throw error;
+        agent.transcript?.record('objective.failure', {
+            type: 'mine_ore',
+            ore_name: oreName,
+            num,
+            error
+        }, 'objectives');
+        agent.objectives.updateTop({
+            state: 'FAILED',
+            status: 'failed',
+            result: finalResult,
+            error: finalResult.message
+        });
+        logResult(finalResult);
+        return formatMiningPlan(finalResult);
+    } finally {
+        if (agent.objectives.peek()?.id === frame.id) {
+            agent.objectives.pop(finalResult);
+        }
     }
 }
