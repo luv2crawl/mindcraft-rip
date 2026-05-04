@@ -10,7 +10,7 @@ const settings = {
     
     "base_profile": "assistant", // survival, assistant, creative, or god_mode
     "profiles": [
-        "./andy.json",
+        "./profiles/deepseek.json",
         // "./profiles/gpt.json",
         // "./profiles/claude.json",
         // "./profiles/gemini.json",
@@ -18,7 +18,6 @@ const settings = {
         // "./profiles/qwen.json",
         // "./profiles/grok.json",
         // "./profiles/mistral.json",
-        // "./profiles/deepseek.json",
         // "./profiles/mercury.json",
         // "./profiles/andy-4.json", // Supports up to 75 messages!
 
@@ -40,13 +39,14 @@ const settings = {
     "language": "en", // translate to/from this language. Supports these language names: https://cloud.google.com/translate/docs/languages
     "render_bot_view": false, // show bot's view in browser at localhost:3000, 3001...
 
-    "allow_insecure_coding": false, // allows newAction command and model can write/run code on your computer. enable at own risk
+    "allow_insecure_coding": true, // allows newAction command and model can write/run code on your computer. enable at own risk
     "allow_vision": false, // allows vision model to interpret screenshots as inputs
     "blocked_actions" : ["!checkBlueprint", "!checkBlueprintLevel", "!getBlueprint", "!getBlueprintLevel"] , // commands to disable and remove from docs. Ex: ["!setMode"]
     "code_timeout_mins": -1, // minutes code is allowed to run. -1 for no timeout
     "relevant_docs_count": 5, // number of relevant code function docs to select for prompting. -1 for all
 
     "max_messages": 15, // max number of messages to keep in context
+    "memory_summary_timeout_ms": 20000, // max time to wait for LLM memory summarization before keeping old memory
     "num_examples": 2, // number of examples to give to the model
     "max_commands": -1, // max number of commands that can be used in consecutive responses. -1 for no limit
     "show_command_syntax": "full", // "full", "shortened", or "none"
@@ -55,8 +55,30 @@ const settings = {
 
     "spawn_timeout": 30, // num seconds allowed for the bot to spawn before throwing error. Increase when spawning takes a while.
     "block_place_delay": 0, // delay between placing blocks (ms) if using newAction. helps avoid bot being kicked by anti-cheat mechanisms on servers.
-  
-    "log_all_prompts": false, // log ALL prompts to file
+
+    // Navigation tunables. Pathfind timeout scales with straight-line distance:
+    // budget_ms = clamp(base + per_block * distance, base, max)
+    "pathfind_timeout_base_ms": 1000,
+    "pathfind_timeout_per_block_ms": 30,
+    "pathfind_timeout_max_ms": 15000,
+    // For long-distance navigation, break the journey into chunks so pathfinder
+    // never has to plan more than ~chunk_distance blocks at once.
+    "nav_chunk_threshold": 100, // distances >= this are navigated in chunks
+    "nav_chunk_distance": 80,   // target chunk size (blocks)
+    "nav_chunk_retry_limit": 2, // retries per chunk before giving up that chunk
+    "journeymap_bridge_url": "http://127.0.0.1:47892", // optional local JourneyMap companion bridge
+    "world_id": null, // optional canonical id for this Minecraft world. Best way to scope durable map/storage memory.
+    "server_path": null, // optional local server root; used to derive world identity from server.properties.
+    "world_path": null, // optional direct local world save path; used to derive world identity.
+    "load_world_memory": true, // load durable world-scoped MemoryBank facts independently of chat memory
+    "warn_on_low_confidence_world_id": true, // chat a warning when durable world identity is only a weak fallback
+    "auto_sync_journeymap_on_start": false, // opt-in: import JourneyMap bridge waypoints after world memory loads
+
+    "log_all_prompts": true, // log ALL prompts to file
+    "transcript_logging": true, // append JSONL runtime transcript events to ./bots/{bot}/transcripts
+    "transcript_include_prompts": false, // include full prompt bodies in transcript logs
+    "transcript_include_code": true, // include generated action code in transcript logs
+    "transcript_max_field_chars": 20000, // truncate long transcript fields
 };
 
 export default settings;

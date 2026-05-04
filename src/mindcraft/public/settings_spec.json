@@ -19,6 +19,36 @@
         "description": "The minecraft server port to connect to. -1 for auto-detect.",
         "default": 55916
     },
+    "world_id": {
+        "type": "string",
+        "description": "Optional canonical id for the Minecraft world. Used to scope durable saved places, storage, routes, and JourneyMap memory.",
+        "default": null
+    },
+    "server_path": {
+        "type": "string",
+        "description": "Optional local Minecraft server directory. If set, Mindcraft reads server.properties to derive a world identity.",
+        "default": null
+    },
+    "world_path": {
+        "type": "string",
+        "description": "Optional direct local world save path used to derive a world identity.",
+        "default": null
+    },
+    "load_world_memory": {
+        "type": "boolean",
+        "description": "Whether to load durable world-scoped structured memory.",
+        "default": true
+    },
+    "warn_on_low_confidence_world_id": {
+        "type": "boolean",
+        "description": "Warn in chat when world memory is using only a low-confidence fallback identity.",
+        "default": true
+    },
+    "auto_sync_journeymap_on_start": {
+        "type": "boolean",
+        "description": "Opt in to importing JourneyMap bridge waypoints after world memory loads on startup.",
+        "default": false
+    },
     "auth": {
         "type": "string",
         "description": "The authentication method to use",
@@ -95,6 +125,26 @@
         "type": "boolean",
         "description": "Whether to log all prompts to file. Can be very verbose.",
         "default": false
+    },
+    "transcript_logging": {
+        "type": "boolean",
+        "description": "Whether to append JSONL runtime transcript events under each bot directory",
+        "default": true
+    },
+    "transcript_include_prompts": {
+        "type": "boolean",
+        "description": "Whether transcript logs include full prompt bodies",
+        "default": false
+    },
+    "transcript_include_code": {
+        "type": "boolean",
+        "description": "Whether transcript logs include generated action code",
+        "default": true
+    },
+    "transcript_max_field_chars": {
+        "type": "number",
+        "description": "Maximum characters for a single transcript field before truncation",
+        "default": 20000
     },
     "show_command_syntax": {
         "type": "string",

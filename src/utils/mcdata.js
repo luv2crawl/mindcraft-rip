@@ -140,7 +140,42 @@ export function isHuntable(mob) {
 
 export function isHostile(mob) {
     if (!mob || !mob.name) return false;
-    return  (mob.type === 'mob' || mob.type === 'hostile') && mob.name !== 'iron_golem' && mob.name !== 'snow_golem';
+    const hostileMobs = new Set([
+        'blaze',
+        'bogged',
+        'breeze',
+        'cave_spider',
+        'creeper',
+        'drowned',
+        'elder_guardian',
+        'endermite',
+        'evoker',
+        'ghast',
+        'guardian',
+        'hoglin',
+        'husk',
+        'magma_cube',
+        'phantom',
+        'piglin_brute',
+        'pillager',
+        'ravager',
+        'shulker',
+        'silverfish',
+        'skeleton',
+        'slime',
+        'spider',
+        'stray',
+        'vex',
+        'vindicator',
+        'warden',
+        'witch',
+        'wither',
+        'wither_skeleton',
+        'zoglin',
+        'zombie',
+        'zombie_villager',
+    ]);
+    return hostileMobs.has(mob.name.toLowerCase());
 }
 
 // blocks that don't work with collectBlock, need to be manually collected

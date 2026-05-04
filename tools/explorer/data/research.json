@@ -1,0 +1,368 @@
+{
+  "version": 1,
+  "generatedAt": "2026-05-03",
+  "source": "Curated from agent-research literature (Voyager, Reflexion, GITM, JARVIS-1, DEPS, MemGPT, ReAct, Generative Agents, CRITIC) and Anthropic's effective-agents writeups, re-mapped to the Mindcraft codebase as of 2026-05-03.",
+  "quick_wins": [
+    {
+      "id": "qw-recent-failures",
+      "title": "Add a $RECENT_FAILURES placeholder to the conversing prompt",
+      "impact": "high",
+      "effort": "low",
+      "summary": "In Prompter.replaceStrings(), render the last 3 failed command results whose rendered text starts with ERR_ or whose normalized result has ok=false as a $RECENT_FAILURES block. Command errors now have stable codes, so the cheap Reflexion-style fix can key off ERR_NO_PATH / ERR_BAD_ARGS / ERR_COMMAND_MISSING instead of brittle prose.",
+      "touches": ["Prompter.replaceStrings", "History", "commands/index.js normalizeCommandResult"],
+      "links": ["https://arxiv.org/abs/2303.11366", "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents"]
+    },
+    {
+      "id": "qw-structured-memory",
+      "title": "Replace the 500-char memory truncation with structured memory sections",
+      "impact": "high",
+      "effort": "low",
+      "summary": "history.js now filters low-value turns and requeues failed summaries, but the running History.memory string is still slice(0, 500). Replace it with labeled buckets (FACTS, OPEN_GOALS, MISTAKES_TO_AVOID), each capped independently, and stop hard-truncating mid-sentence.",
+      "touches": ["History.summarizeMemories", "History._filterTurnsForMemory", "Prompter.promptMemSaving", "profiles/defaults/_default.json saving_memory prompt"],
+      "links": ["https://arxiv.org/abs/2311.05997", "https://arxiv.org/abs/2310.08560"]
+    },
+    {
+      "id": "qw-multi-command",
+      "title": "Resolve the one-command policy mismatch",
+      "impact": "med",
+      "effort": "low",
+      "summary": "Agent.handleMessage now extracts and executes every command in one model response, but the default prompt and command docs still say 'Use at most one command in each response.' Decide whether serial multi-command execution is supported behavior or only a defensive fallback, then align tests, prompts, and UI docs so the model is not trained against the runtime.",
+      "touches": ["Agent.handleMessage", "commands/index.js extractCommandMessages", "commands/index.js getCommandDocs", "profiles/defaults/_default.json conversing prompt"],
+      "links": ["https://www.anthropic.com/engineering/writing-tools-for-agents"]
+    },
+    {
+      "id": "qw-objectives-snapshot",
+      "title": "Add an $OBJECTIVES placeholder so the model sees its own stack",
+      "impact": "high",
+      "effort": "low",
+      "summary": "ObjectiveStack.getSummary() already produces a clean rendered stack and !objectives exposes it manually, but Prompter.replaceStrings does not inject it. Add $OBJECTIVES near $SELF_PROMPT in profile.conversing. Today the stack affects response caps but is mostly invisible to the model during normal reasoning.",
+      "touches": ["Prompter.replaceStrings", "ObjectiveStack.getSummary", "queries.js !objectives", "profile.conversing"],
+      "links": ["https://arxiv.org/abs/2305.17144"]
+    },
+    {
+      "id": "qw-repeat-detect",
+      "title": "Detect repeated failing commands and inject a sharp interrupt",
+      "impact": "med",
+      "effort": "low",
+      "summary": "Hash the last N normalized command messages plus rendered result codes in handleMessage. If the same command repeats with ok=false, append a system turn 'You just tried X and it failed with ERR_Y. Try a different approach or ask for help.' before the next promptConvo call.",
+      "touches": ["Agent.handleMessage", "commands/index.js normalizeCommandResult", "History"],
+      "links": ["https://arxiv.org/abs/2303.11366"]
+    }
+  ],
+  "themes": [
+    {
+      "id": "reasoning-loop",
+      "title": "Reasoning Loop & Control Flow",
+      "summary": "The current loop now supports serial command extraction and goal-aware response caps, but still has no explicit reflect/replan step. Voyager, Reflexion, and DEPS all show that adding a structured observe -> reflect -> act beat dramatically improves long-horizon success in Minecraft.",
+      "recommendations": [
+        {
+          "id": "rl-reflexion",
+          "title": "Insert a Reflexion turn after K consecutive non-progress steps",
+          "detail": "Track 'progress' as inventory delta + objective-state changes between handleMessage iterations. After 3 iterations with no progress, run a dedicated promptReflection() call (separate from promptConvo) whose output is prepended to history as a system note. Reflexion shows even a single verbal self-critique buffer materially improves trial-2 performance with no weight updates.",
+          "touches": ["Agent.handleMessage", "Prompter (new promptReflection)", "History"],
+          "links": ["https://arxiv.org/abs/2303.11366"]
+        },
+        {
+          "id": "rl-deps",
+          "title": "Harden DEPS planning for !newAction with JSON validation",
+          "detail": "A DEPS-style promptNewActionPlan now runs before promptCoding and its raw output is injected into Coder. The next gap is validating that the planner returns parseable JSON with goal, sub_goals, selected_sub_goal, and selection_reason, then falling back or re-prompting when it does not. Without validation, bad planner text becomes binding context for code generation.",
+          "touches": ["Coder.generateCode", "Coder._formatNewActionPlanForCoding", "Prompter.promptNewActionPlan"],
+          "links": ["https://arxiv.org/abs/2302.01560"]
+        },
+        {
+          "id": "rl-replan",
+          "title": "Make replanning a first-class trigger, not an implicit retry",
+          "detail": "Add explicit triggers: action timeout (already in ActionManager._startTimeout), 3+ failed commands in a row, death event, inventory shrinkage during a gather objective. Each should call objectives.updateTop({state: 'REPLAN'}) and emit a system message that explains WHY — otherwise the model has to infer from raw output why the loop broke.",
+          "touches": ["ActionManager", "Agent bot event handlers", "ObjectiveStack"],
+          "links": ["https://voyager.minedojo.org/", "https://arxiv.org/abs/2302.01560"]
+        },
+        {
+          "id": "rl-react",
+          "title": "Separate 'thought' from 'action' parsing (ReAct-style)",
+          "detail": "Right now any non-command text in a model reply is treated as chat. Adopt a 'Thought: … Action: !cmd(…)' format and either hide or chat the Thought. Gives the model explicit room to reason without leaking it into in-game chat, and lets you log the reasoning trace separately in TranscriptLogger for replay/eval.",
+          "touches": ["Agent.handleMessage", "Agent.openChat", "TranscriptLogger", "profile.conversing"],
+          "links": ["https://arxiv.org/abs/2210.03629"]
+        },
+        {
+          "id": "rl-goal-aware-cap",
+          "title": "Render objective state into prompts, not only response-cap logic",
+          "detail": "resolveMaxResponses already uses active ObjectiveStack state to decide whether self-prompts may consume settings.max_commands. The model still does not see the stack unless it calls !objectives. Add $OBJECTIVES to the prompt and update objective frames from more workflows so the cap policy and the reasoning context are based on the same state.",
+          "touches": ["Agent.resolveMaxResponses", "Prompter.replaceStrings", "ObjectiveStack.getSummary", "profile.conversing"],
+          "links": ["https://www.anthropic.com/research/building-effective-agents"]
+        }
+      ]
+    },
+    {
+      "id": "tool-output-design",
+      "title": "Tool / Command Output Design",
+      "summary": "Mindcraft now has a normalization/rendering layer for command results and stable OK/ERR_* prefixes, but command implementations are still a mix of legacy strings and formatted objective results. The next leverage is making outputs compact, structured, and consistently recoverable.",
+      "recommendations": [
+        {
+          "id": "td-structured-result",
+          "title": "Finish migrating commands to structured results before rendering",
+          "detail": "commands/index.js can normalize {ok, code, summary, data, next_hints}, and several objective/route/storage paths already emit structured-looking results. Finish the migration so every command returns the object shape first, with renderCommandResult as the only prompt-facing text renderer. This gives evals machine-readable result data and gives the model consistent recovery hints.",
+          "touches": ["src/agent/commands/actions.js", "src/agent/commands/queries.js", "commands/index.js normalizeCommandResult"],
+          "links": ["https://www.anthropic.com/engineering/writing-tools-for-agents"]
+        },
+        {
+          "id": "td-tail-truncation",
+          "title": "Move action-output truncation into the shared result renderer",
+          "detail": "ActionManager.getBotOutputSummary now keeps both the first and final snippets, which fixes the old middle-loss problem. The remaining issue is that truncation happens before command normalization and is capped at 500 chars with no structured error fields. Move this into the command-result renderer so failures preserve code, summary, tail, and next_hints predictably.",
+          "touches": ["ActionManager.getBotOutputSummary", "commands/index.js renderCommandResult"],
+          "links": ["https://www.anthropic.com/engineering/writing-tools-for-agents"]
+        },
+        {
+          "id": "td-error-codes",
+          "title": "Document recovery semantics for ERR_* codes",
+          "detail": "Stable codes now exist in normalizeCommandResult and command docs mention OK / ERR_NO_PATH / ERR_BAD_ARGS / ERR_COMMAND_MISSING / ERR_INTERRUPTED / ERR_PARTIAL. The next step is a small recovery table in $COMMAND_DOCS: ERR_NO_PATH -> try nearer waypoint or ask; ERR_BAD_ARGS -> inspect docs; ERR_PARTIAL -> continue from reported state. Codes are most useful when paired with explicit next moves.",
+          "touches": ["src/agent/commands/index.js getCommandDocs", "src/agent/commands/actions.js", "src/agent/commands/queries.js"],
+          "links": ["https://www.anthropic.com/engineering/writing-tools-for-agents"]
+        },
+        {
+          "id": "td-diff-snapshots",
+          "title": "Make !inventory and !nearbyBlocks diff-style after the first call",
+          "detail": "Prompter.replaceStrings rebuilds full $STATS/$INVENTORY every prompt; in self-prompt loops these are 90% identical between turns. Cache the previous render and emit only the delta for steps 2..N of one handleMessage, with a periodic full snapshot every 5 turns. Saves serious tokens on long autonomous runs.",
+          "touches": ["Prompter.replaceStrings", "Agent (new prev_state cache)"],
+          "links": ["https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents"]
+        },
+        {
+          "id": "td-abort",
+          "title": "Add !abortObjective(reason), distinct from !stop and !clearObjectives",
+          "detail": "The repo now has !clearObjectives for cancelling the stack, but the model still lacks a way to mark the top objective as failed with a reason. Add !abortObjective('reason') that pops or updates the top frame with status failed and records the reason to transcript/memory. That preserves learning signal instead of simply clearing state.",
+          "touches": ["src/agent/commands/actions.js", "ObjectiveStack.pop", "TranscriptLogger", "SelfPrompter"],
+          "links": ["https://arxiv.org/abs/2305.11738"]
+        }
+      ]
+    },
+    {
+      "id": "memory-architectures",
+      "title": "Memory Architectures",
+      "summary": "Mindcraft now has a filtered 500-char History.memory plus typed MemoryBank namespaces for places, JourneyMap waypoints, routes, storage, observations, and pending state. It still has no semantic retrieval or durable episodic/semantic split.",
+      "recommendations": [
+        {
+          "id": "mem-three-stores",
+          "title": "Split History.memory into working / episodic / semantic stores",
+          "detail": "Replace the single this.memory string with three: working (current active objective context), episodic (timestamped {event, outcome} entries written when objectives complete/fail), semantic (extracted facts like 'iron veins are common at y=-30 in this seed'). Render the three with distinct headers in $MEMORY. JARVIS-1 shows this split is what enables life-long task transfer.",
+          "touches": ["History (major refactor)", "Prompter.replaceStrings $MEMORY", "bots/{name}/memory.json schema"],
+          "links": ["https://arxiv.org/abs/2311.05997", "https://research.memgpt.ai/"]
+        },
+        {
+          "id": "mem-episodic-retrieval",
+          "title": "Retrieve episodic memories by similarity to the current goal",
+          "detail": "Reuse the Examples.embed pipeline: embed every episodic entry on write, and at prompt-build time embed the active objective + last user message and pull top-k episodes into $MEMORY. Essentially MemGPT's recall memory pattern; replaces the current 'shove the running summary in every prompt' approach.",
+          "touches": ["History (new episodic_store with embeddings)", "Examples (reuse embed model)", "Prompter.replaceStrings"],
+          "links": ["https://arxiv.org/abs/2310.08560"]
+        },
+        {
+          "id": "mem-reflection",
+          "title": "Add a reflection step that promotes episodic facts to semantic ones",
+          "detail": "After every Nth completed objective, run a promptReflect over recent episodic entries and extract durable facts (e.g. 'creepers blow up villager workstations' → semantic). This is the Generative Agents reflection loop — what stops agents from re-learning the same lesson every play session.",
+          "touches": ["History (new reflectAndPromote)", "Prompter (new promptReflect)", "ObjectiveStack.pop hook"],
+          "links": ["https://arxiv.org/abs/2304.03442"]
+        },
+        {
+          "id": "mem-bank-gc",
+          "title": "Garbage-collect MemoryBank places by recency + utility",
+          "detail": "MemoryBank now stores typed namespaces, not just places, and can accumulate JourneyMap waypoints, routes, storage records, observations, and pending route issues. Add usage timestamps and namespace-specific pruning rules while always preserving last_death_position, home_chest, active routes, and recent pending issues.",
+          "touches": ["MemoryBank.rememberPlace", "MemoryBank (new pruneStale)"],
+          "links": ["https://stevekinney.com/writing/agent-memory-systems"]
+        },
+        {
+          "id": "mem-lessons",
+          "title": "Persist a 'lessons learned' file across bot processes",
+          "detail": "Create bots/{name}/lessons.jsonl appended whenever a reflection extracts a semantic fact, and load it into a $LESSONS placeholder at prompt-build time. The Voyager skill-library idea applied to negative knowledge — what NOT to do, in addition to what to do.",
+          "touches": ["History.save/load", "Prompter.replaceStrings (new $LESSONS)", "new bots/{name}/lessons.jsonl"],
+          "links": ["https://voyager.minedojo.org/"]
+        }
+      ]
+    },
+    {
+      "id": "example-retrieval",
+      "title": "Example Retrieval & Prompt Steering",
+      "summary": "examples.js already does embedding-based retrieval with a word-overlap fallback, intent normalization, assistant-output overlap, and a small user-intent role boost. Biggest gaps are hybrid scoring tuning, negative examples, and intent classification before retrieval.",
+      "recommendations": [
+        {
+          "id": "ex-hybrid-bm25",
+          "title": "Add hybrid BM25 + embedding scoring with a learned weight",
+          "detail": "embeddingScore mixes cosine similarity with assistant-output word overlap and a small role boost; fallbackScore uses intent/output word overlap. Replace the word-overlap component with proper BM25 over the example corpus and store the blend weight in profile so you can sweep it. Hybrid retrieval consistently beats pure dense on small heterogeneous corpora - exactly Mindcraft's regime.",
+          "touches": ["src/utils/examples.js embeddingScore", "src/utils/text.js wordOverlapScore"],
+          "links": ["https://www.pinecone.io/learn/hybrid-search-intro/"]
+        },
+        {
+          "id": "ex-intent-classify",
+          "title": "Classify intent before retrieving examples",
+          "detail": "normalizeIntentText strips noise but still sends raw text to embed(). Add a tiny pre-classifier (LLM or rules) that tags the latest user message as one of {social, build, gather, navigate, combat, query, debug} and pull k examples from each bucket weighted by predicted distribution. Avoids 'help me kill this zombie' pulling a mining example just because both mention iron.",
+          "touches": ["Examples.getRelevant", "new src/utils/intent_router.js"],
+          "links": ["https://www.anthropic.com/research/building-effective-agents"]
+        },
+        {
+          "id": "ex-anti-examples",
+          "title": "Add negative / anti-examples to the conversing prompt",
+          "detail": "Currently $EXAMPLES are all 'do this'. Add a separate $ANTI_EXAMPLES section showing 2 prior failed trajectories (pulled from the lessons store) with annotations like 'Wrong because the bot didn't check inventory first'. CRITIC and Anthropic's tool-design guidance both note a few well-labeled negatives outperform many positives on tool-call accuracy.",
+          "touches": ["Prompter.replaceStrings (new $ANTI_EXAMPLES)", "Examples (new anti-example store)"],
+          "links": ["https://arxiv.org/abs/2305.11738", "https://www.anthropic.com/engineering/writing-tools-for-agents"]
+        },
+        {
+          "id": "ex-embed-assistant",
+          "title": "Embed assistant output or add richer continuation scoring",
+          "detail": "Assistant output now contributes word-overlap scoring, but Examples.load still embeds only exampleIntentText. Add a second embedding for assistantOutputText and use it when the latest user message looks like a continuation rather than a new intent. Cheap to add; helps multi-turn conversations where the user references a previous action.",
+          "touches": ["Examples.load", "Examples.embeddingScore", "Examples.assistantOutputText"],
+          "links": ["https://research.google/pubs/dense-passage-retrieval-for-open-domain-question-answering/"]
+        },
+        {
+          "id": "ex-cache-retries",
+          "title": "Extend example caching beyond promptConvo retries",
+          "detail": "Prompter.promptConvo now caches $EXAMPLES inside one retry burst via stableReplacements. The next cache boundary is the handleMessage/self-prompt loop: reuse the selected example set while the normalized latest intent is unchanged, and invalidate only when a new user/system intent arrives.",
+          "touches": ["Prompter.promptConvo", "Prompter.replaceStrings", "Examples.getRelevant"],
+          "links": ["https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents"]
+        }
+      ]
+    },
+    {
+      "id": "long-horizon-skills",
+      "title": "Long-Horizon Planning & Skill Libraries",
+      "summary": "ObjectiveStack, mining-objective helpers, and SkillLibrary exist, but the bot still does not grow new reusable skills at runtime. Voyager's central thesis is that the skill library should be a write-back store that compounds over a play session.",
+      "recommendations": [
+        {
+          "id": "sk-writable",
+          "title": "Make SkillLibrary writable: persist successful !newAction code as named skills",
+          "detail": "When a !newAction execution succeeds AND produces a useful inventory delta, prompt code_model to (a) name the function, (b) write a one-line description, then save to bots/{name}/skills/{name}.js and re-embed it into skill_docs_embeddings. Next time getRelevantSkillDocs runs, the model sees its own successful prior code as a callable. Literally the Voyager loop and the highest-impact long-horizon change available.",
+          "touches": ["Coder", "SkillLibrary.initSkillLibrary", "new bots/{name}/skills/ dir", "ActionManager success path"],
+          "links": ["https://voyager.minedojo.org/", "https://github.com/MineDojo/Voyager"]
+        },
+        {
+          "id": "sk-curriculum",
+          "title": "Add a curriculum proposer that generates the next sub-goal",
+          "detail": "Add Prompter.promptCurriculum invoked when ObjectiveStack is empty and SelfPrompter is active. It takes current inventory + memory + recent skills and returns one 'next sensible sub-goal' (e.g. 'craft a stone pickaxe'). Voyager's automatic curriculum — replaces the current pattern of relying on the user to set top-level goals.",
+          "touches": ["Prompter (new promptCurriculum)", "SelfPrompter.startLoop", "ObjectiveStack.push"],
+          "links": ["https://voyager.minedojo.org/"]
+        },
+        {
+          "id": "sk-decompose",
+          "title": "Decompose top-level goals via GITM-style hierarchical decomposer",
+          "detail": "Wrap user-issued goals (the things fed to SelfPrompter.start) through a one-shot decomposer that returns a tree of sub-goals pushed onto ObjectiveStack. GITM showed this lifts ObtainDiamond success from ~30% to 67.5% versus flat planning, on essentially the same models.",
+          "touches": ["SelfPrompter.start", "ObjectiveStack.push", "new Prompter.promptDecompose"],
+          "links": ["https://arxiv.org/abs/2305.17144"]
+        },
+        {
+          "id": "sk-self-test",
+          "title": "Add skill versioning and self-test before promotion",
+          "detail": "Before persisting a new skill from !newAction, run it again in a verification harness (no-op dry run, asserts no exceptions) and only commit on success. Voyager's iterative-prompting + self-verification step is what keeps the library from being polluted by code that worked once by luck. Without this, the library becomes net-negative within a few sessions.",
+          "touches": ["Coder", "new src/agent/library/skill_verifier.js"],
+          "links": ["https://voyager.minedojo.org/", "https://arxiv.org/abs/2305.11738"]
+        },
+        {
+          "id": "sk-preconditions",
+          "title": "Annotate skills with preconditions and use them as retrieval boosts",
+          "detail": "When saving a skill, also record preconditions (required inventory, required nearby blocks) extracted from the prompt. SkillLibrary.getRelevantSkillDocs can then filter+boost skills whose preconditions match the current $STATS/$INVENTORY. Turns retrieval from 'most semantically similar' into 'most actually executable right now'.",
+          "touches": ["SkillLibrary (new metadata)", "SkillLibrary.getRelevantSkillDocs"],
+          "links": ["https://arxiv.org/abs/2305.16291"]
+        }
+      ]
+    },
+    {
+      "id": "eval-observability",
+      "title": "Eval & Observability",
+      "summary": "TranscriptLogger captures rich telemetry, including model/command/memory/objective events, but there is still no replay tool, golden trajectory suite, or LLM-as-judge harness. Without these, every prompt/runtime change is hard to validate.",
+      "recommendations": [
+        {
+          "id": "ev-replay",
+          "title": "Build a transcript-replay harness that re-runs prompter on saved trajectories",
+          "detail": "TranscriptLogger already records model.request/response pairs. Add a script that takes a saved transcript and re-runs Prompter.promptConvo with the same history slice but the current code/profile, then diffs the response. Lets you safely iterate on prompts without spinning up Minecraft, and is the foundation for everything else in this theme.",
+          "touches": ["TranscriptLogger", "new scripts/replay_transcript.js", "Prompter.promptConvo"],
+          "links": ["https://docs.langchain.com/langsmith/trajectory-evals"]
+        },
+        {
+          "id": "ev-golden",
+          "title": "Curate ~30 golden trajectories (5 per task type) and run them in CI",
+          "detail": "Pick representative successful runs from bots/*/histories and freeze them as golden_trajectories/*.json with the expected sequence of command names. CI replays each, asserts the new model still issues commands of the same name in the same order (loose match, not exact args). Catches the 'I changed the prompt and now the bot won't mine' regressions.",
+          "touches": ["new tests/golden_trajectories/", "new scripts/run_eval.js", "TranscriptLogger"],
+          "links": ["https://www.getmaxim.ai/articles/building-a-golden-dataset-for-ai-evaluation-a-step-by-step-guide/"]
+        },
+        {
+          "id": "ev-judge",
+          "title": "Add an LLM-as-judge scorer for full trajectories",
+          "detail": "For non-deterministic eval, write a judge prompt that takes (goal, trajectory, final_state) and returns {success, efficiency, errors_made}. Use a stronger model than the bot uses (e.g. Claude Opus when the bot is on a smaller Sonnet/Haiku). Run nightly across recent transcripts; dashboard the scores.",
+          "touches": ["TranscriptLogger", "new src/eval/judge.js", "new scripts/nightly_eval.js"],
+          "links": ["https://www.evidentlyai.com/llm-guide/llm-as-a-judge"]
+        },
+        {
+          "id": "ev-objective-metrics",
+          "title": "Emit structured progress metrics per objective frame",
+          "detail": "ObjectiveStack already records push/update/pop events to transcript. Also compute duration_ms, commands_issued, retries, inventory_delta, and final result code per frame and log them as objective.metrics. Gives a per-task efficiency view that's far more actionable than 'did the bot eventually finish'.",
+          "touches": ["ObjectiveStack.pop", "TranscriptLogger"],
+          "links": ["https://arxiv.org/html/2507.21504v1"]
+        },
+        {
+          "id": "ev-shadow-model",
+          "title": "Add a 'shadow model' mode that runs a second model in parallel and diffs",
+          "detail": "When settings.shadow_model is set, fire promptConvo at both chat_model and the shadow in parallel, log both to TranscriptLogger, but only act on the primary. Cheap; gives continuous A/B data on cheaper-model viability with zero user-visible behavior change.",
+          "touches": ["Prompter.promptConvo", "settings.js", "TranscriptLogger"],
+          "links": ["https://www.langchain.com/articles/llm-evaluation-framework"]
+        }
+      ]
+    },
+    {
+      "id": "model-routing",
+      "title": "Multi-Model Routing & Cost / Latency",
+      "summary": "Prompter supports separate chat/code/vision/embedding models from profile, and now has a new-action planning call, but routes most text calls statically through chat_model. Modern cascade and speculative-cascade work shows large wins from dynamic per-call routing.",
+      "recommendations": [
+        {
+          "id": "mr-cheap-housekeeping",
+          "title": "Route 'easy' calls (memory summary, bot-responder, intent classify) to a cheap model",
+          "detail": "promptMemSaving, promptShouldRespondToBot, and promptNewActionPlan all use this.chat_model. Add profile.cheap_model and route non-action or pre-action planning calls there when stakes are low. Reserve the strong model for main reasoning, high-stakes command selection, and code verification.",
+          "touches": ["Prompter constructor (add cheap_model)", "Prompter.promptMemSaving", "Prompter.promptShouldRespondToBot", "Prompter.promptNewActionPlan"],
+          "links": ["https://www.anthropic.com/research/building-effective-agents"]
+        },
+        {
+          "id": "mr-draft-verify",
+          "title": "Implement a draft-then-verify cascade for !newAction code generation",
+          "detail": "promptCoding goes straight to code_model. Generate with a fast model (Haiku/Qwen-coder), then send the code to a stronger verifier with 'Will this run? List bugs.' Only re-generate with the strong model if verifier flags issues. Speculative cascades from Google Research show this beats either pure approach on cost-quality.",
+          "touches": ["Prompter.promptCoding", "Coder", "new draft/verify split"],
+          "links": ["https://research.google/blog/speculative-cascades-a-hybrid-approach-for-smarter-faster-llm-inference/"]
+        },
+        {
+          "id": "mr-stakes-escalator",
+          "title": "Add a confidence-based escalator for command selection",
+          "detail": "When the model emits a command, classify the command/result context as high-stakes (mining, combat, irreversible building, route digging) or low-stakes (chat/query). If high-stakes and the generation came from a cheap model, re-prompt with the strong model before executing. This pairs naturally with ObjectiveStack status and stable ERR_* command codes.",
+          "touches": ["Agent.handleMessage", "Prompter (new promptStakesClassify)", "ObjectiveStack"],
+          "links": ["https://openreview.net/forum?id=AAl89VNNy1"]
+        },
+        {
+          "id": "mr-adaptive-router",
+          "title": "Track per-model latency / failure rates and route adaptively",
+          "detail": "TranscriptLogger already has model.request/response/failure. Aggregate per-model rolling windows of (avg_latency, hallucination_rate, retry count) and demote a model temporarily when it crosses thresholds. Important since Mindcraft supports ~15 providers with very different reliability profiles.",
+          "touches": ["TranscriptLogger", "_model_map.js selectAPI", "new src/models/router.js"],
+          "links": ["https://research.google/blog/speculative-cascades-a-hybrid-approach-for-smarter-faster-llm-inference/"]
+        },
+        {
+          "id": "mr-embedding-pin",
+          "title": "Validate the embedding model at startup; don't silently fall back",
+          "detail": "Prompter.constructor falls back to the chat-model API for embeddings when none is specified — for several providers this either fails silently or returns degraded vectors. Either require an explicit embedding model in the profile (validate at startup) or pin a known-good default like text-embedding-3-small. Today, retrieval quality silently varies by provider.",
+          "touches": ["Prompter constructor", "_model_map.js", "profile schemas"],
+          "links": ["https://platform.openai.com/docs/guides/embeddings"]
+        }
+      ]
+    }
+  ],
+  "bigger_bets": [
+    {
+      "id": "bb-voyager",
+      "title": "Full Voyager-style lifelong skill library with automatic curriculum",
+      "rationale": "Combine the writable SkillLibrary, the curriculum proposer, and the iterative-prompting + self-verification loop into one system that runs across sessions. The difference between a chat-driven assistant and an agent that gets measurably better the longer you let it play. Voyager reported 3.3× more unique items and 15.3× faster tech-tree milestones — achievable here because Mindcraft already has the scaffolding (Coder, SkillLibrary, ObjectiveStack).",
+      "links": ["https://voyager.minedojo.org/", "https://arxiv.org/abs/2305.16291", "https://github.com/MineDojo/Voyager"]
+    },
+    {
+      "id": "bb-multi-agent-debate",
+      "title": "Multi-agent debate / specialist swarm for hard objectives",
+      "rationale": "Spawn ephemeral specialist personas (Planner, Critic, Coder, Navigator) for hard objectives, run a 1-2 round debate via convoManager (which already handles inter-bot conversation), and have the main agent execute the consensus plan. Mindcraft uniquely already has multi-bot infra in place — most agent frameworks would need to build that first. Pairs naturally with cascade routing: cheap model for specialists, strong model for the moderator.",
+      "links": ["https://www.anthropic.com/research/building-effective-agents", "https://arxiv.org/abs/2305.14325"]
+    },
+    {
+      "id": "bb-multimodal-memory",
+      "title": "Memory-augmented multimodal planner using the existing vision pipeline",
+      "rationale": "VisionInterpreter and promptVision are wired up but underused — most reasoning happens off text-only $STATS. Adopt JARVIS-1's pattern: at planning time capture a screenshot, embed it alongside the textual state, retrieve top-k similar past situations from episodic memory, prompt the planner with both. Unlocks tasks where text descriptions are lossy (build aesthetics, complex terrain, base layout) and gives a clean place to put the multimodal memory store the codebase doesn't yet have.",
+      "links": ["https://arxiv.org/abs/2311.05997", "https://craftjarvis-jarvis1.github.io/"]
+    }
+  ]
+}

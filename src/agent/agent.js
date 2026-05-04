@@ -4,7 +4,7 @@ import { VisionInterpreter } from './vision/vision_interpreter.js';
 import { Prompter } from '../models/prompter.js';
 import { initModes } from './modes.js';
 import { initBot } from '../utils/mcdata.js';
-import { containsCommand, commandExists, executeCommand, truncCommandMessage, isAction, blacklistCommands } from './commands/index.js';
+import { containsCommand, commandExists, executeCommand, extractCommandMessages, isAction, blacklistCommands, normalizeCommandResult, renderCommandResult } from './commands/index.js';
 import { ActionManager } from './action_manager.js';
 import { NPCContoller } from './npc/controller.js';
 import { MemoryBank } from './memory_bank.js';
@@ -17,6 +17,41 @@ import settings from './settings.js';
 import { Task } from './tasks/tasks.js';
 import { speak } from './speak.js';
 import { log, validateNameFormat, handleDisconnection } from './connection_handler.js';
+import { TranscriptLogger } from './transcript_logger.js';
+import { ObjectiveStack } from './objectives/objective_stack.js';
+import { resolveWorldIdentity } from './world_identity.js';
+import { loadWorldMemory, saveWorldMemory } from './world_memory.js';
+import { fetchBridgeWaypoints, mergeJourneyMapWaypoints } from './journeymap.js';
+import { createSessionMemory, noteCommandResult, noteCommandStart } from './session_memory.js';
+
+function _configuredMaxCommands() {
+    if (settings.max_commands === -1) return Infinity;
+    if (settings.max_commands === undefined || settings.max_commands === null) return 1;
+    return settings.max_commands;
+}
+
+function _normalizeMaxResponses(max_responses) {
+    if (max_responses === -1) return Infinity;
+    return max_responses;
+}
+
+export function resolveMaxResponses({ requestedMaxResponses, selfPrompt, objective }) {
+    if (requestedMaxResponses !== null && requestedMaxResponses !== undefined) {
+        return _normalizeMaxResponses(requestedMaxResponses);
+    }
+
+    const configured = _configuredMaxCommands();
+    if (!selfPrompt) {
+        return Math.min(configured, 1);
+    }
+
+    const activeObjectiveStates = new Set(['running', 'in_progress', 'pending']);
+    if (objective && activeObjectiveStates.has(objective.status)) {
+        return configured;
+    }
+
+    return Math.min(configured, 1);
+}
 
 export class Agent {
     async start(load_mem=false, init_message=null, count_id=0) {
@@ -26,8 +61,18 @@ export class Agent {
 
         // Initialize components
         this.actions = new ActionManager(this);
+        this.objectives = new ObjectiveStack(this);
+        this.session_memory = createSessionMemory();
         this.prompter = new Prompter(this, settings.profile);
         this.name = (this.prompter.getName() || '').trim();
+        this.transcript = new TranscriptLogger(this.name || 'unknown');
+        this.transcript.record('agent.start', {
+            load_mem,
+            init_message,
+            count_id,
+            profile_name: settings.profile?.name,
+            model: settings.profile?.model
+        }, 'agent');
         console.log(`Initializing agent ${this.name}...`);
         
         // Validate Name Format
@@ -43,6 +88,7 @@ export class Agent {
         this.coder = new Coder(this);
         this.npc = new NPCContoller(this);
         this.memory_bank = new MemoryBank();
+        this.session_memory = createSessionMemory();
         this.self_prompter = new SelfPrompter(this);
         convoManager.initAgent(this);
         await this.prompter.initExamples();
@@ -73,6 +119,11 @@ export class Agent {
             // Log and Analyze
             // handleDisconnection handles logging to console and server
             const { type } = handleDisconnection(this.name, reason);
+            this.transcript?.record('agent.disconnect', {
+                event,
+                type,
+                reason
+            }, 'agent');
      
             process.exit(1);
         };
@@ -92,6 +143,7 @@ export class Agent {
 
         this.bot.on('login', () => {
             console.log(this.name, 'logged in!');
+            this.transcript?.record('agent.login', {}, 'agent');
             serverProxy.login();
             
             // Set skin for profile, requires Fabric Tailor. (https://modrinth.com/mod/fabrictailor)
@@ -117,7 +169,14 @@ export class Agent {
                 await new Promise((resolve) => setTimeout(resolve, 1000));
                 
                 console.log(`${this.name} spawned.`);
+                this.transcript?.record('agent.spawn', {
+                    load_mem,
+                    init_message,
+                    count_id
+                }, 'agent');
                 this.clearBotLogs();
+
+                await this._initializeWorldMemory(save_data);
               
                 this._setupEventHandlers(save_data, init_message);
                 this.startEvents();
@@ -144,6 +203,84 @@ export class Agent {
         });
     }
 
+    async _initializeWorldMemory(save_data = null) {
+        if (settings.load_world_memory === false) {
+            this.transcript?.record('world_memory.disabled', {}, 'world_memory');
+            return;
+        }
+        this.world_identity = await resolveWorldIdentity(this);
+        loadWorldMemory(this, this.world_identity, {
+            legacyMemoryBank: save_data?.memory_bank || null,
+        });
+        await this._syncJourneyMapOnStart();
+        const confidence = this.world_identity?.confidence;
+        if (confidence === 'low' && settings.warn_on_low_confidence_world_id !== false) {
+            this.openChat(`World memory is using a low-confidence world id (${this.world_identity.source}). Set world_id in settings to make saved places/storage safer across server moves.`);
+        } else if (confidence === 'temporary') {
+            this.openChat('I could not determine a durable world id, so map/storage memory is temporary for this session. Set world_id in settings to persist it safely.');
+        }
+    }
+
+    async _syncJourneyMapOnStart() {
+        if (settings.auto_sync_journeymap_on_start !== true) {
+            this.transcript?.record('journeymap.startup_sync.skipped', {
+                enabled: false,
+            }, 'journeymap');
+            return;
+        }
+
+        this.transcript?.record('journeymap.startup_sync.start', {
+            bridge_url: settings.journeymap_bridge_url,
+            world_id: this.world_identity?.world_id,
+        }, 'journeymap');
+        try {
+            const rawWaypoints = await fetchBridgeWaypoints();
+            const stats = mergeJourneyMapWaypoints(this.memory_bank, rawWaypoints, {
+                source: 'journeymap_bridge_startup',
+            });
+            if (this.memory_bank?.isDirty?.()) {
+                saveWorldMemory(this);
+            }
+            this.transcript?.record('journeymap.startup_sync.success', {
+                ...stats,
+                world_id: this.world_identity?.world_id,
+            }, 'journeymap');
+        } catch (error) {
+            this.transcript?.record('journeymap.startup_sync.failure', {
+                error: error?.message || String(error),
+                world_id: this.world_identity?.world_id,
+            }, 'journeymap');
+            this.openChat('JourneyMap startup sync is enabled, but the bridge is unavailable. Existing world memory still loaded; use !syncJourneyMap later or paste a JourneyMap location.');
+        }
+    }
+
+    _commandMetadata(commandText) {
+        const commandName = String(commandText || '').match(/!(\w+)/)?.[0] || null;
+        if (!commandName) return {};
+        const args = [...String(commandText || '').matchAll(/"([^"]*)"|-?\d+(?:\.\d+)?|true|false/g)]
+            .map(match => match[1] ?? match[0]);
+        const [firstArg] = args;
+        const resourceCommands = new Set([
+            '!mineOre',
+            '!planMiningRun',
+            '!prepareMiningRun',
+            '!findInStorage',
+            '!restockFromStorage',
+            '!takeFromChest',
+            '!depositAll',
+            '!craftRecipe',
+            '!getCraftingPlan',
+            '!gatherForRecipe',
+            '!collectBlocks',
+        ]);
+        return {
+            args,
+            resourceTarget: resourceCommands.has(commandName) && typeof firstArg === 'string'
+                ? firstArg
+                : null,
+        };
+    }
+
     async _setupEventHandlers(save_data, init_message) {
         const ignore_messages = [
             "Set own game mode to",
@@ -164,12 +301,21 @@ export class Agent {
                 this.shut_up = false;
 
                 console.log(this.name, 'received message from', username, ':', message);
+                this.transcript?.record('message.inbound.raw', {
+                    source: username,
+                    message
+                }, 'agent');
 
                 if (convoManager.isOtherAgent(username)) {
                     console.warn('received whisper from other bot??')
                 }
                 else {
                     let translation = await handleEnglishTranslation(message);
+                    this.transcript?.record('message.inbound.translated', {
+                        source: username,
+                        original: message,
+                        message: translation
+                    }, 'agent');
                     this.handleMessage(username, translation);
                 }
             } catch (error) {
@@ -257,22 +403,30 @@ export class Agent {
             console.warn('Received empty message from', source);
             return false;
         }
+        this.transcript?.record('message.handle.start', {
+            source,
+            message,
+            max_responses
+        }, 'agent');
 
         let used_command = false;
-        if (max_responses === null) {
-            max_responses = settings.max_commands === -1 ? Infinity : settings.max_commands;
-        }
-        if (max_responses === -1) {
-            max_responses = Infinity;
-        }
-
         const self_prompt = source === 'system' || source === this.name;
         const from_other_bot = convoManager.isOtherAgent(source);
+        max_responses = resolveMaxResponses({
+            requestedMaxResponses: max_responses,
+            selfPrompt: self_prompt,
+            objective: this.objectives?.peek?.()
+        });
 
         if (!self_prompt && !from_other_bot) { // from user, check for forced commands
             const user_command_name = containsCommand(message);
             if (user_command_name) {
                 if (!commandExists(user_command_name)) {
+                    noteCommandResult(this, user_command_name, normalizeCommandResult(`Command ${user_command_name} does not exist.`, {
+                        commandName: user_command_name,
+                        code: 'ERR_COMMAND_MISSING',
+                        ok: false
+                    }));
                     this.routeResponse(source, `Command '${user_command_name}' does not exist.`);
                     return false;
                 }
@@ -282,9 +436,20 @@ export class Agent {
                     // add the preceding message to the history to give context for newAction
                     this.history.add(source, message);
                 }
+                const metadata = this._commandMetadata(message);
+                noteCommandStart(this, user_command_name, metadata);
                 let execute_res = await executeCommand(this, message);
-                if (execute_res) 
-                    this.routeResponse(source, execute_res);
+                noteCommandResult(this, user_command_name, execute_res, metadata);
+                if (execute_res && execute_res.code !== 'ERR_EMPTY_RESULT') 
+                    this.routeResponse(source, renderCommandResult(execute_res));
+                if (user_command_name === '!newAction' || this.memory_bank?.isDirty?.()) {
+                    await this.history.save();
+                }
+                this.transcript?.record('message.handle.end', {
+                    source,
+                    used_command: true,
+                    forced_command: user_command_name
+                }, 'agent');
                 return true;
             }
         }
@@ -295,6 +460,12 @@ export class Agent {
         // Now translate the message
         message = await handleEnglishTranslation(message);
         console.log('received message from', source, ':', message);
+        this.transcript?.record('message.prompt.input', {
+            source,
+            message,
+            self_prompt,
+            from_other_bot
+        }, 'agent');
 
         const checkInterrupt = () => this.self_prompter.shouldInterrupt(self_prompt) || this.shut_up || convoManager.responseScheduledFor(source);
         
@@ -323,50 +494,86 @@ export class Agent {
 
             if (res.trim().length === 0) {
                 console.warn('no response')
+                this.transcript?.record('message.no_response', {
+                    source
+                }, 'agent');
                 break; // empty response ends loop
             }
 
-            let command_name = containsCommand(res);
+            let command_messages = extractCommandMessages(res);
 
-            if (command_name) { // contains query or command
-                res = truncCommandMessage(res); // everything after the command is ignored
+            if (command_messages.length > 0) { // contains query or command
                 this.history.add(this.name, res);
-                
-                if (!commandExists(command_name)) {
-                    this.history.add('system', `Command ${command_name} does not exist.`);
-                    console.warn('Agent hallucinated command:', command_name)
-                    continue;
+
+                let stop_loop = false;
+                for (let j=0; j<command_messages.length; j++) {
+                    const command_message = command_messages[j];
+                    const command_name = command_message.commandName;
+                    
+                    if (!commandExists(command_name)) {
+                        this.history.add('system', renderCommandResult(normalizeCommandResult(`Command ${command_name} does not exist.`, {
+                            commandName: command_name,
+                            code: 'ERR_COMMAND_MISSING',
+                            ok: false
+                        })));
+                        noteCommandResult(this, command_name, normalizeCommandResult(`Command ${command_name} does not exist.`, {
+                            commandName: command_name,
+                            code: 'ERR_COMMAND_MISSING',
+                            ok: false
+                        }));
+                        console.warn('Agent hallucinated command:', command_name)
+                        this.transcript?.record('command.hallucinated', {
+                            command_name,
+                            response: res
+                        }, 'agent');
+                        continue;
+                    }
+
+                    if (checkInterrupt()) {
+                        stop_loop = true;
+                        break;
+                    }
+                    this.self_prompter.handleUserPromptedCmd(self_prompt, isAction(command_name));
+
+                    const pre_message = j === 0 ? res.substring(0, command_message.index).trim() : '';
+                    if (settings.show_command_syntax === "full") {
+                        let chat_message = command_message.commandText;
+                        if (pre_message.length > 0)
+                            chat_message = `${pre_message}  ${chat_message}`;
+                        this.routeResponse(source, chat_message);
+                    }
+                    else if (settings.show_command_syntax === "shortened") {
+                        // show only "used !commandname"
+                        let chat_message = `*used ${command_name.substring(1)}*`;
+                        if (pre_message.length > 0)
+                            chat_message = `${pre_message}  ${chat_message}`;
+                        this.routeResponse(source, chat_message);
+                    }
+                    else {
+                        // no command at all
+                        if (pre_message.trim().length > 0)
+                            this.routeResponse(source, pre_message);
+                    }
+
+                    const metadata = this._commandMetadata(command_message.commandText);
+                    noteCommandStart(this, command_name, metadata);
+                    let execute_res = await executeCommand(this, command_message.commandText);
+                    noteCommandResult(this, command_name, execute_res, metadata);
+                    let rendered_execute_res = renderCommandResult(execute_res);
+
+                    console.log('Agent executed:', command_name, 'and got:', rendered_execute_res);
+                    used_command = true;
+
+                    if (execute_res?.code === 'ERR_EMPTY_RESULT') {
+                        stop_loop = true;
+                        break;
+                    }
+                    else {
+                        this.history.add('system', rendered_execute_res);
+                    }
                 }
 
-                if (checkInterrupt()) break;
-                this.self_prompter.handleUserPromptedCmd(self_prompt, isAction(command_name));
-
-                if (settings.show_command_syntax === "full") {
-                    this.routeResponse(source, res);
-                }
-                else if (settings.show_command_syntax === "shortened") {
-                    // show only "used !commandname"
-                    let pre_message = res.substring(0, res.indexOf(command_name)).trim();
-                    let chat_message = `*used ${command_name.substring(1)}*`;
-                    if (pre_message.length > 0)
-                        chat_message = `${pre_message}  ${chat_message}`;
-                    this.routeResponse(source, chat_message);
-                }
-                else {
-                    // no command at all
-                    let pre_message = res.substring(0, res.indexOf(command_name)).trim();
-                    if (pre_message.trim().length > 0)
-                        this.routeResponse(source, pre_message);
-                }
-
-                let execute_res = await executeCommand(this, res);
-
-                console.log('Agent executed:', command_name, 'and got:', execute_res);
-                used_command = true;
-
-                if (execute_res)
-                    this.history.add('system', execute_res);
-                else
+                if (stop_loop)
                     break;
             }
             else { // conversation response
@@ -378,6 +585,10 @@ export class Agent {
             this.history.save();
         }
 
+        this.transcript?.record('message.handle.end', {
+            source,
+            used_command
+        }, 'agent');
         return used_command;
     }
 
@@ -402,6 +613,7 @@ export class Agent {
     }
 
     async openChat(message) {
+        const originalMessage = message;
         let to_translate = message;
         let remaining = '';
         let command_name = containsCommand(message);
@@ -418,6 +630,13 @@ export class Agent {
             for (let username of settings.only_chat_with) {
                 this.bot.whisper(username, message);
             }
+            this.transcript?.record('message.outbound', {
+                original: originalMessage,
+                translated: message,
+                recipients: settings.only_chat_with,
+                chat_ingame: false,
+                speak: false
+            }, 'agent');
         }
         else {
             if (settings.speak) {
@@ -425,6 +644,12 @@ export class Agent {
             }
             if (settings.chat_ingame) {this.bot.chat(message);}
             sendOutputToServer(this.name, message);
+            this.transcript?.record('message.outbound', {
+                original: originalMessage,
+                translated: message,
+                chat_ingame: settings.chat_ingame,
+                speak: settings.speak
+            }, 'agent');
         }
     }
 
@@ -532,6 +757,11 @@ export class Agent {
         this.history.add('system', msg);
         this.bot.chat(code > 1 ? 'Restarting.': 'Exiting.');
         this.history.save();
+        this.transcript?.record('agent.clean_kill', {
+            msg,
+            code
+        }, 'agent');
+        this.transcript?.flushSync?.();
         process.exit(code);
     }
     async checkTaskDone() {
@@ -542,6 +772,7 @@ export class Agent {
                 await this.history.save();
                 // await new Promise(resolve => setTimeout(resolve, 3000)); // Wait 3 second for save to complete
                 console.log('Task finished:', res.message);
+                this.transcript?.record('task.finished', res, 'agent');
                 this.killAll();
             }
         }

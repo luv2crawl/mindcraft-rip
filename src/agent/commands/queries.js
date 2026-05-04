@@ -4,9 +4,32 @@ import { getCommandDocs } from './index.js';
 import convoManager from '../conversation.js';
 import { checkLevelBlueprint, checkBlueprint } from '../tasks/construction_tasks.js';
 import { load } from 'cheerio';
+import { formatMiningPlan, planMiningRun } from '../objectives/mining_objective.js';
+import { objectiveResult, formatObjectiveResult } from '../objectives/objective_results.js';
+import { getWorldMemoryPath } from '../world_memory.js';
 
 const pad = (str) => {
     return '\n' + str + '\n';
+}
+
+function formatLocationRecord(name, record) {
+    const x = record?.x;
+    const y = record?.y ?? '?';
+    const z = record?.z;
+    if (x === undefined || z === undefined) return name;
+    const dim = record?.dimension ?? record?.dim;
+    const dimText = dim === undefined || dim === null ? '' : ` dim:${dim}`;
+    return `${name}: (${x}, ${y}, ${z})${dimText}`;
+}
+
+function formatLocationSection(title, records, limit = 20) {
+    const entries = Object.entries(records || {}).sort(([a], [b]) => a.localeCompare(b));
+    if (entries.length === 0) return `${title}: none`;
+    const shown = entries
+        .slice(0, limit)
+        .map(([name, record]) => formatLocationRecord(name, record));
+    const suffix = entries.length > limit ? `\n...and ${entries.length - limit} more` : '';
+    return `${title}:\n${shown.join('\n')}${suffix}`;
 }
 
 // queries are commands that just return strings and don't affect anything in the world
@@ -220,12 +243,117 @@ export const queryList = [
         }
     },
     {
+        name: '!objectives',
+        description: 'Show the current objective stack and active high-level workflow state.',
+        perform: function (agent) {
+            return agent.objectives.getSummary();
+        }
+    },
+    {
+        name: '!worldMemoryStatus',
+        description: 'Show the resolved world identity and durable world-memory path.',
+        perform: function(agent) {
+            const identity = agent.world_identity || null;
+            if (!identity) {
+                return formatObjectiveResult(objectiveResult({
+                    ok: false,
+                    reason: 'world_identity_missing',
+                    message: 'No world identity has been resolved yet. Durable world memory may not be loaded.',
+                    recommendedCommands: ['Set world_id in settings.js and restart.'],
+                }));
+            }
+            return formatObjectiveResult(objectiveResult({
+                ok: identity.confidence !== 'temporary',
+                reason: identity.confidence === 'temporary' ? 'temporary_world_memory' : 'ok',
+                message: [
+                    `World memory id: ${identity.world_id}`,
+                    `Source: ${identity.source}`,
+                    `Confidence: ${identity.confidence}`,
+                    `Memory path: ${agent.world_memory_path || getWorldMemoryPath(identity) || 'temporary'}`,
+                ].join('\n'),
+                data: {
+                    world_id: identity.world_id,
+                    source: identity.source,
+                    confidence: identity.confidence,
+                    path: agent.world_memory_path || getWorldMemoryPath(identity),
+                },
+            }));
+        }
+    },
+    {
+        name: '!planMiningRun',
+        description: 'Plan a mining run without moving. Reports needed supplies, current inventory, missing supplies, and recommended commands.',
+        params: {
+            'ore_name': { type: 'string', description: 'Ore to mine, e.g. "diamond", "iron", "ancient_debris".' },
+            'num': { type: 'int', description: 'How many ore drops to collect.', domain: [1, Number.MAX_SAFE_INTEGER] }
+        },
+        perform: function (agent, ore_name, num) {
+            return formatMiningPlan(planMiningRun(agent, ore_name, num));
+        }
+    },
+    {
         name: '!savedPlaces',
-        description: 'List all saved locations.',
+        description: 'List all saved locations across remembered places, JourneyMap waypoints, and storage labels.',
         perform: async function (agent) {
-            return "Saved place names: " + agent.memory_bank.getKeys();
+            const places = agent.memory_bank.list('places');
+            const waypoints = agent.memory_bank.list('journeymap.waypoints');
+            const storage = agent.memory_bank.list('storage');
+            const count = Object.keys(places).length + Object.keys(waypoints).length + Object.keys(storage).length;
+            if (count === 0) {
+                return formatObjectiveResult(objectiveResult({
+                    ok: false,
+                    reason: 'no_saved_locations',
+                    message: 'No saved locations found in places, JourneyMap waypoints, or storage labels.',
+                    recommendedCommands: [
+                        '!rememberHere("base")',
+                        '!importJourneyMapLocation("[x:10, y:64, z:-20, dim:0, name:MAIN_BASE]")',
+                        '!labelNearestStorage("home_chest")',
+                    ],
+                }));
+            }
+            return formatObjectiveResult(objectiveResult({
+                ok: true,
+                reason: 'ok',
+                message: [
+                    'Saved locations:',
+                    formatLocationSection('Places', places),
+                    formatLocationSection('JourneyMap waypoints', waypoints),
+                    formatLocationSection('Storage labels', storage),
+                ].join('\n'),
+                data: {
+                    places: Object.keys(places).length,
+                    journeyMapWaypoints: Object.keys(waypoints).length,
+                    storage: Object.keys(storage).length,
+                },
+            }));
         }
     }, 
+    {
+        name: '!journeyMapWaypoints',
+        description: 'List imported JourneyMap waypoints compactly.',
+        perform: async function (agent) {
+            const waypoints = agent.memory_bank.list('journeymap.waypoints');
+            const names = Object.keys(waypoints);
+            if (names.length === 0) {
+                return formatObjectiveResult(objectiveResult({
+                    ok: false,
+                    reason: 'no_journeymap_waypoints',
+                    message: 'No JourneyMap waypoints are imported.',
+                    recommendedCommands: ['!syncJourneyMap', '!importJourneyMapLocation("[x:10, y:64, z:-20, dim:0, name:base]")'],
+                }));
+            }
+            const lines = names.sort().slice(0, 20).map(name => {
+                const wp = waypoints[name];
+                return `${name}: (${wp.x}, ${wp.y ?? '?'}, ${wp.z}) dim:${wp.dimension ?? '?'}`;
+            });
+            return formatObjectiveResult(objectiveResult({
+                ok: true,
+                reason: 'ok',
+                message: `JourneyMap waypoints:\n${lines.join('\n')}`,
+                data: { count: names.length },
+            }));
+        }
+    },
     {
         name: '!checkBlueprintLevel',
         description: 'Check if the level is complete and what blocks still need to be placed for the blueprint',

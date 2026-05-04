@@ -61,6 +61,7 @@ export class ActionManager {
     async _executeAction(actionLabel, actionFn, timeout = 10) {
         let TIMEOUT;
         try {
+            this.timedout = false;
             if (this.last_action_time > 0) {
                 let time_diff = Date.now() - this.last_action_time;
                 if (time_diff < 20) {
@@ -81,6 +82,11 @@ export class ActionManager {
             }
             this.last_action_time = Date.now();
             console.log('executing code...\n');
+            const actionStart = Date.now();
+            this.agent.transcript?.record('action.start', {
+                actionLabel,
+                timeout
+            }, 'action_manager');
 
             // await current action to finish (executing=false), with 10 seconds timeout
             // also tell agent.bot to stop various actions
@@ -114,6 +120,7 @@ export class ActionManager {
             let output = this.getBotOutputSummary();
             let interrupted = this.agent.bot.interrupt_code;
             let timedout = this.timedout;
+            this.timedout = false;
             this.agent.clearBotLogs();
 
             // if not interrupted and not generating, emit idle event
@@ -122,6 +129,13 @@ export class ActionManager {
             }
 
             // return action status report
+            this.agent.transcript?.record('action.end', {
+                actionLabel,
+                duration_ms: Date.now() - actionStart,
+                interrupted,
+                timedout,
+                output
+            }, 'action_manager');
             return { success: true, message: output, interrupted, timedout };
         } catch (err) {
             this.executing = false;
@@ -129,23 +143,44 @@ export class ActionManager {
             this.currentActionFn = null;
             clearTimeout(TIMEOUT);
             this.cancelResume();
+            const interrupted = this.agent.bot.interrupt_code;
+            const timedout = this.timedout;
+            if (interrupted && !timedout) {
+                this.timedout = false;
+                this.agent.clearBotLogs();
+                this.agent.transcript?.record('action.end', {
+                    actionLabel,
+                    interrupted: true,
+                    timedout: false,
+                    output: ''
+                }, 'action_manager');
+                return { success: false, message: '', interrupted: true, timedout: false };
+            }
             console.error("Code execution triggered catch:", err);
             // Log the full stack trace
             console.error(err.stack);
             await this.stop();
-            err = err.toString();
+            const errString = err?.toString?.() || String(err);
+            const stack = err?.stack || '';
 
             let message = this.getBotOutputSummary() +
                 '!!Code threw exception!!\n' +
-                'Error: ' + err + '\n' +
-                'Stack trace:\n' + err.stack+'\n';
+                'Error: ' + errString + '\n' +
+                'Stack trace:\n' + stack + '\n';
 
-            let interrupted = this.agent.bot.interrupt_code;
             this.agent.clearBotLogs();
+            this.timedout = false;
             if (!interrupted) {
                 this.agent.bot.emit('idle');
             }
-            return { success: false, message, interrupted, timedout: false };
+            this.agent.transcript?.record('action.failure', {
+                actionLabel,
+                error: errString,
+                message,
+                interrupted,
+                timedout
+            }, 'action_manager');
+            return { success: false, message, interrupted, timedout };
         }
     }
 
@@ -169,6 +204,10 @@ export class ActionManager {
         return setTimeout(async () => {
             console.warn(`Code execution timed out after ${TIMEOUT_MINS} minutes. Attempting force stop.`);
             this.timedout = true;
+            this.agent.transcript?.record('action.timeout', {
+                actionLabel: this.currentActionLabel,
+                timeout_mins: TIMEOUT_MINS
+            }, 'action_manager');
             this.agent.history.add('system', `Code execution timed out after ${TIMEOUT_MINS} minutes. Attempting force stop.`);
             await this.stop(); // last attempt to stop
         }, TIMEOUT_MINS * 60 * 1000);

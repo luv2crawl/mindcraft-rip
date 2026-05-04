@@ -9,6 +9,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { selectAPI, createModel } from './_model_map.js';
+import { ensureSessionMemory, formatSessionMemory } from '../agent/session_memory.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -111,8 +112,8 @@ export class Prompter {
 
     async initExamples() {
         try {
-            this.convo_examples = new Examples(this.embedding_model, settings.num_examples);
-            this.coding_examples = new Examples(this.embedding_model, settings.num_examples);
+            this.convo_examples = new Examples(this.embedding_model, settings.num_examples, this.agent);
+            this.coding_examples = new Examples(this.embedding_model, settings.num_examples, this.agent);
             
             // Wait for both examples to load before proceeding
             await Promise.all([
@@ -134,17 +135,50 @@ export class Prompter {
         }
     }
 
-    async replaceStrings(prompt, messages, examples=null, to_summarize=[], last_goals=null) {
+    _memoryContext(messages = null) {
+        const latestUser = (messages || []).slice().reverse().find(msg => msg.role === 'user')?.content || '';
+        const latest = latestUser || (messages || []).slice().reverse().find(msg => msg.role !== 'system')?.content || '';
+        const sessionMemory = ensureSessionMemory(this.agent);
+        return {
+            latestUserMessage: latestUser,
+            latestMessage: latest,
+            activeObjective: this.agent.objectives?.peek?.() || null,
+            activeObjectiveSummary: sessionMemory.activeObjectiveSummary || null,
+            currentAction: this.agent.actions?.currentActionLabel || '',
+            currentCommandName: sessionMemory.currentCommandName || sessionMemory.lastCommand || '',
+            currentResourceTarget: sessionMemory.currentResourceTarget || this._extractResourceTarget(latest),
+            dimension: this.agent.bot?.game?.dimension ?? null,
+            position: this.agent.bot?.entity?.position || null,
+            lastCommandResultCode: sessionMemory.lastCommandResultCode || null,
+            lastCommandResultData: sessionMemory.lastCommandResultData || {},
+            sessionMemory,
+        };
+    }
+
+    _extractResourceTarget(text = '') {
+        const lower = String(text || '').toLowerCase();
+        const commandMatch = lower.match(/!(?:mineore|planminingrun|prepareminingrun|findinstorage|restockfromstorage|takefromchest|depositall|craftrecipe|getcraftingplan)\("([^"]+)"/);
+        if (commandMatch) return commandMatch[1];
+        const intentMatch = lower.match(/\b(?:mine|find|restock|take|withdraw|craft|gather|collect|need|missing)\s+([a-z0-9_ -]{3,40})/);
+        return intentMatch ? intentMatch[1].trim().replace(/\s+/g, '_') : null;
+    }
+
+    async replaceStrings(prompt, messages, examples=null, to_summarize=[], last_goals=null, cachedReplacements=null, options={}) {
         prompt = prompt.replaceAll('$NAME', this.agent.name);
 
         if (prompt.includes('$STATS')) {
-            let stats = await getCommand('!stats').perform(this.agent) + '\n';
-            stats += await getCommand('!entities').perform(this.agent) + '\n';
-            stats += await getCommand('!nearbyBlocks').perform(this.agent);
+            let stats = await this._cachedReplacement(cachedReplacements, '$STATS', async () => {
+                let value = await getCommand('!stats').perform(this.agent) + '\n';
+                value += await getCommand('!entities').perform(this.agent) + '\n';
+                value += await getCommand('!nearbyBlocks').perform(this.agent);
+                return value;
+            });
             prompt = prompt.replaceAll('$STATS', stats);
         }
         if (prompt.includes('$INVENTORY')) {
-            let inventory = await getCommand('!inventory').perform(this.agent);
+            let inventory = await this._cachedReplacement(cachedReplacements, '$INVENTORY', async () => {
+                return await getCommand('!inventory').perform(this.agent);
+            });
             prompt = prompt.replaceAll('$INVENTORY', inventory);
         }
         if (prompt.includes('$ACTION')) {
@@ -162,10 +196,35 @@ export class Prompter {
                 await this.skill_libary.getRelevantSkillDocs(code_task_content, settings.relevant_docs_count)
             );
         }
-        if (prompt.includes('$EXAMPLES') && examples !== null)
-            prompt = prompt.replaceAll('$EXAMPLES', await examples.createExampleMessage(messages));
-        if (prompt.includes('$MEMORY'))
-            prompt = prompt.replaceAll('$MEMORY', this.agent.history.memory);
+        if (prompt.includes('$EXAMPLES') && examples !== null) {
+            const exampleMessage = await this._cachedReplacement(cachedReplacements, '$EXAMPLES', async () => {
+                return await examples.createExampleMessage(messages);
+            });
+            prompt = prompt.replaceAll('$EXAMPLES', exampleMessage);
+        }
+        if (prompt.includes('$TEXT_MEMORY')) {
+            prompt = prompt.replaceAll('$TEXT_MEMORY', this.agent.history.memory || '');
+        }
+        if (prompt.includes('$STRUCTURED_MEMORY')) {
+            const memoryContext = this._memoryContext(messages);
+            const structuredMemory = this.agent.memory_bank?.getPromptSummary?.(memoryContext) || '';
+            const sessionMemory = formatSessionMemory(memoryContext.sessionMemory);
+            const memory = [sessionMemory, structuredMemory].filter(Boolean).join('\n');
+            prompt = prompt.replaceAll('$STRUCTURED_MEMORY', memory ? `Structured memory:\n${memory}` : '');
+        }
+        if (prompt.includes('$MEMORY')) {
+            const textMemory = this.agent.history.memory || '';
+            const includeStructured = options.includeStructuredMemory !== false;
+            const memoryContext = includeStructured ? this._memoryContext(messages) : null;
+            const structuredMemory = includeStructured
+                ? this.agent.memory_bank?.getPromptSummary?.(memoryContext) || ''
+                : '';
+            const sessionMemory = includeStructured ? formatSessionMemory(memoryContext.sessionMemory) : '';
+            const memory = [textMemory, (sessionMemory || structuredMemory) ? `Structured memory:\n${[sessionMemory, structuredMemory].filter(Boolean).join('\n')}` : '']
+                .filter(Boolean)
+                .join('\n');
+            prompt = prompt.replaceAll('$MEMORY', memory);
+        }
         if (prompt.includes('$TO_SUMMARIZE'))
             prompt = prompt.replaceAll('$TO_SUMMARIZE', stringifyTurns(to_summarize));
         if (prompt.includes('$CONVO'))
@@ -203,6 +262,14 @@ export class Prompter {
         return prompt;
     }
 
+    async _cachedReplacement(cache, key, createValue) {
+        if (!cache) return await createValue();
+        if (!cache.has(key)) {
+            cache.set(key, await createValue());
+        }
+        return cache.get(key);
+    }
+
     async checkCooldown() {
         let elapsed = Date.now() - this.last_prompt_time;
         if (elapsed < this.cooldown && this.cooldown > 0) {
@@ -214,6 +281,7 @@ export class Prompter {
     async promptConvo(messages) {
         this.most_recent_msg_time = Date.now();
         let current_msg_time = this.most_recent_msg_time;
+        const stableReplacements = new Map();
 
         for (let i = 0; i < 3; i++) { // try 3 times to avoid hallucinations
             await this.checkCooldown();
@@ -222,8 +290,16 @@ export class Prompter {
             }
 
             let prompt = this.profile.conversing;
-            prompt = await this.replaceStrings(prompt, messages, this.convo_examples);
+            prompt = await this.replaceStrings(prompt, messages, this.convo_examples, [], null, stableReplacements);
             let generation;
+            const start = Date.now();
+            this.agent.transcript?.record('model.request', {
+                kind: 'conversation',
+                attempt: i + 1,
+                model: this.chat_model?.model_name,
+                message_count: messages?.length ?? 0,
+                prompt
+            }, 'prompter');
 
             try {
                 generation = await this.chat_model.sendRequest(messages, prompt);
@@ -233,20 +309,42 @@ export class Prompter {
                 }
                 console.log("Generated response:", generation);
                 await this._saveLog(prompt, messages, generation, 'conversation');
+                this.agent.transcript?.record('model.response', {
+                    kind: 'conversation',
+                    attempt: i + 1,
+                    duration_ms: Date.now() - start,
+                    response: generation
+                }, 'prompter');
 
             } catch (error) {
                 console.error('Error during message generation or file writing:', error);
+                this.agent.transcript?.record('model.failure', {
+                    kind: 'conversation',
+                    attempt: i + 1,
+                    duration_ms: Date.now() - start,
+                    error: error?.message || String(error)
+                }, 'prompter');
                 continue;
             }
 
             // Check for hallucination or invalid output
             if (generation?.includes('(FROM OTHER BOT)')) {
                 console.warn('LLM hallucinated message as another bot. Trying again...');
+                this.agent.transcript?.record('model.discarded', {
+                    kind: 'conversation',
+                    reason: 'hallucinated_other_bot',
+                    response: generation
+                }, 'prompter');
                 continue;
             }
 
             if (current_msg_time !== this.most_recent_msg_time) {
                 console.warn(`${this.agent.name} received new message while generating, discarding old response.`);
+                this.agent.transcript?.record('model.discarded', {
+                    kind: 'conversation',
+                    reason: 'newer_message_received',
+                    response: generation
+                }, 'prompter');
                 return '';
             }
 
@@ -271,18 +369,86 @@ export class Prompter {
         let prompt = this.profile.coding;
         prompt = await this.replaceStrings(prompt, messages, this.coding_examples);
 
-        let resp = await this.code_model.sendRequest(messages, prompt);
-        this.awaiting_coding = false;
-        await this._saveLog(prompt, messages, resp, 'coding');
-        return resp;
+        const start = Date.now();
+        this.agent.transcript?.record('model.request', {
+            kind: 'coding',
+            model: this.code_model?.model_name,
+            message_count: messages?.length ?? 0,
+            prompt
+        }, 'prompter');
+        try {
+            let resp = await this.code_model.sendRequest(messages, prompt);
+            await this._saveLog(prompt, messages, resp, 'coding');
+            this.agent.transcript?.record('model.response', {
+                kind: 'coding',
+                duration_ms: Date.now() - start,
+                response: resp
+            }, 'prompter');
+            return resp;
+        } catch (error) {
+            this.agent.transcript?.record('model.failure', {
+                kind: 'coding',
+                duration_ms: Date.now() - start,
+                error: error?.message || String(error)
+            }, 'prompter');
+            throw error;
+        } finally {
+            this.awaiting_coding = false;
+        }
+    }
+
+    async promptNewActionPlan(messages) {
+        await this.checkCooldown();
+        let prompt = this.profile.new_action_planning;
+        if (!prompt) {
+            prompt = 'Plan the requested !newAction. Return concise JSON with goal, sub_goals, selected_sub_goal, and selection_reason. Do not write code.\n$SELF_PROMPT\nSummarized memory:\'$MEMORY\'\n$STATS\n$INVENTORY\n$CODE_DOCS\n$EXAMPLES\nConversation:';
+        }
+        prompt = await this.replaceStrings(prompt, messages, this.coding_examples);
+
+        const start = Date.now();
+        this.agent.transcript?.record('model.request', {
+            kind: 'new_action_plan',
+            model: this.chat_model?.model_name,
+            message_count: messages?.length ?? 0,
+            prompt
+        }, 'prompter');
+        try {
+            let resp = await this.chat_model.sendRequest(messages, prompt);
+            await this._saveLog(prompt, messages, resp, 'newActionPlan');
+            this.agent.transcript?.record('model.response', {
+                kind: 'new_action_plan',
+                duration_ms: Date.now() - start,
+                response: resp
+            }, 'prompter');
+            return resp;
+        } catch (error) {
+            this.agent.transcript?.record('model.failure', {
+                kind: 'new_action_plan',
+                duration_ms: Date.now() - start,
+                error: error?.message || String(error)
+            }, 'prompter');
+            throw error;
+        }
     }
 
     async promptMemSaving(to_summarize) {
         await this.checkCooldown();
         let prompt = this.profile.saving_memory;
-        prompt = await this.replaceStrings(prompt, null, null, to_summarize);
+        prompt = await this.replaceStrings(prompt, null, null, to_summarize, null, null, { includeStructuredMemory: false });
+        const start = Date.now();
+        this.agent.transcript?.record('model.request', {
+            kind: 'memory',
+            model: this.chat_model?.model_name,
+            message_count: to_summarize?.length ?? 0,
+            prompt
+        }, 'prompter');
         let resp = await this.chat_model.sendRequest([], prompt);
         await this._saveLog(prompt, to_summarize, resp, 'memSaving');
+        this.agent.transcript?.record('model.response', {
+            kind: 'memory',
+            duration_ms: Date.now() - start,
+            response: resp
+        }, 'prompter');
         if (resp?.includes('</think>')) {
             const [_, afterThink] = resp.split('</think>')
             resp = afterThink;
@@ -296,7 +462,19 @@ export class Prompter {
         let messages = this.agent.history.getHistory();
         messages.push({role: 'user', content: new_message});
         prompt = await this.replaceStrings(prompt, null, null, messages);
+        const start = Date.now();
+        this.agent.transcript?.record('model.request', {
+            kind: 'bot_responder',
+            model: this.chat_model?.model_name,
+            message_count: messages.length,
+            prompt
+        }, 'prompter');
         let res = await this.chat_model.sendRequest([], prompt);
+        this.agent.transcript?.record('model.response', {
+            kind: 'bot_responder',
+            duration_ms: Date.now() - start,
+            response: res
+        }, 'prompter');
         return res.trim().toLowerCase() === 'respond';
     }
 
@@ -304,7 +482,21 @@ export class Prompter {
         await this.checkCooldown();
         let prompt = this.profile.image_analysis;
         prompt = await this.replaceStrings(prompt, messages, null, null, null);
-        return await this.vision_model.sendVisionRequest(messages, prompt, imageBuffer);
+        const start = Date.now();
+        this.agent.transcript?.record('model.request', {
+            kind: 'vision',
+            model: this.vision_model?.model_name,
+            message_count: messages?.length ?? 0,
+            image_bytes: imageBuffer?.length,
+            prompt
+        }, 'prompter');
+        const res = await this.vision_model.sendVisionRequest(messages, prompt, imageBuffer);
+        this.agent.transcript?.record('model.response', {
+            kind: 'vision',
+            duration_ms: Date.now() - start,
+            response: res
+        }, 'prompter');
+        return res;
     }
 
     async promptGoalSetting(messages, last_goals) {
