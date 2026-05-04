@@ -34,6 +34,7 @@ describe('History memory summarization', () => {
         settings.memory_summary_timeout_ms = 1000;
         try {
             const events = [];
+            let summarizedTurns = null;
             const history = Object.create(History.prototype);
             history.memory = 'old';
             history.agent = {
@@ -41,18 +42,58 @@ describe('History memory summarization', () => {
                     record: (...args) => events.push(args)
                 },
                 prompter: {
-                    promptMemSaving: async () => 'new memory'
+                    promptMemSaving: async turns => {
+                        summarizedTurns = turns;
+                        return 'new memory';
+                    }
                 }
             };
 
-            await history.summarizeMemories([{ role: 'user', content: 'hello' }]);
+            await history.summarizeMemories([
+                { role: 'system', content: '(AUTO MESSAGE)Your previous action was interrupted.' },
+                { role: 'system', content: 'Action output:\nPlaced torch.' },
+                { role: 'user', content: 'player: remember base is north of spawn' }
+            ]);
             assert.equal(history.memory, 'new memory');
+            assert.deepEqual(summarizedTurns, [
+                { role: 'user', content: 'player: remember base is north of spawn' }
+            ]);
             assert.equal(events[0][0], 'memory.summary.start');
+            assert.equal(events[0][1].filtered_turn_count, 1);
             assert.equal(events[1][0], 'memory.summary.end');
             assert.equal(events[1][1].memory, 'new memory');
         } finally {
             setSettings({ memory_summary_timeout_ms: originalTimeout });
         }
+    });
+
+    test('skips summarization when a chunk only contains transient action noise', async () => {
+        const events = [];
+        let calls = 0;
+        const history = Object.create(History.prototype);
+        history.memory = 'keep durable memory';
+        history.agent = {
+            transcript: {
+                record: (...args) => events.push(args)
+            },
+            prompter: {
+                promptMemSaving: async () => {
+                    calls++;
+                    return 'bad memory';
+                }
+            }
+        };
+
+        const ok = await history.summarizeMemories([
+            { role: 'system', content: '(AUTO MESSAGE)Your previous action was interrupted by self_preservation.' },
+            { role: 'system', content: 'Action output:\nPlaced torch at (1, 2, 3).' },
+            { role: 'assistant', content: 'Item collecting interrupted. !stop' }
+        ]);
+
+        assert.equal(ok, true);
+        assert.equal(calls, 0);
+        assert.equal(history.memory, 'keep durable memory');
+        assert.ok(events.some(event => event[0] === 'memory.summary.skipped'));
     });
 
     test('requeues evicted turns when summarization fails', async () => {

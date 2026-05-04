@@ -34,6 +34,23 @@ export class Coder {
         // this message history is transient and only maintained in this function
         let messages = agent_history.getHistory(); 
         messages.push({role: 'system', content: 'Code generation started. Write code in codeblock in your response:'});
+        if (this.agent.bot.interrupt_code)
+            return null;
+
+        const planMessages = JSON.parse(JSON.stringify(messages));
+        const newActionPlan = await this.agent.prompter.promptNewActionPlan(planMessages);
+        if (this.agent.bot.interrupt_code)
+            return null;
+
+        const planContext = this._formatNewActionPlanForCoding(newActionPlan, messages);
+        this.agent.transcript?.record('code.plan.generated', {
+            plan: planContext.plan,
+            fallback: planContext.fallback
+        }, 'coder');
+        messages.push({
+            role: 'system',
+            content: planContext.message
+        });
 
         const MAX_ATTEMPTS = 5;
         const MAX_NO_CODE = 3;
@@ -133,6 +150,43 @@ export class Coder {
             }
         }
         return `Code generation failed after ${MAX_ATTEMPTS} attempts.`;
+    }
+
+    _formatNewActionPlanForCoding(plan, messages) {
+        let planText = typeof plan === 'string' ? plan.trim() : '';
+        let fallback = false;
+        if (planText.length === 0) {
+            fallback = true;
+            const request = this._latestNewActionRequest(messages);
+            planText = JSON.stringify({
+                goal: request,
+                sub_goals: [request],
+                selected_sub_goal: request,
+                selection_reason: 'Planner returned no usable plan, so code the requested action directly.'
+            }, null, 2);
+        }
+
+        return {
+            plan: planText,
+            fallback,
+            message: [
+                'DEPS plan for this !newAction:',
+                planText,
+                '',
+                'Use this plan as binding context for code generation.',
+                'Write code only for selected_sub_goal now.',
+                'Use the full sub_goals list only as dependency context; do not implement later sub_goals unless they are required to complete selected_sub_goal safely.'
+            ].join('\n')
+        };
+    }
+
+    _latestNewActionRequest(messages) {
+        const content = messages.slice().reverse().find(msg =>
+            msg.role !== 'system' && typeof msg.content === 'string' && msg.content.includes('!newAction(')
+        )?.content || '';
+        const match = content.match(/!newAction\((.*?)\)/);
+        if (match?.[1]) return match[1].trim();
+        return 'Complete the requested custom action.';
     }
     
     async  _lintCode(code) {

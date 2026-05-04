@@ -1,3 +1,5 @@
+import { noteObjectiveUpdate } from '../session_memory.js';
+
 let nextObjectiveId = 1;
 
 export class ObjectiveStack {
@@ -20,6 +22,7 @@ export class ObjectiveStack {
         };
         this.frames.push(frame);
         this.agent?.transcript?.record('objective.push', frame, 'objectives');
+        noteObjectiveUpdate(this.agent, frame);
         return frame;
     }
 
@@ -32,6 +35,7 @@ export class ObjectiveStack {
             }
             frame.updatedAt = Date.now();
             this.agent?.transcript?.record('objective.pop', frame, 'objectives');
+            noteObjectiveUpdate(this.agent, this.peek());
         }
         return frame;
     }
@@ -45,6 +49,7 @@ export class ObjectiveStack {
         if (!frame) return null;
         Object.assign(frame, patch, { updatedAt: Date.now() });
         this.agent?.transcript?.record('objective.update', frame, 'objectives');
+        noteObjectiveUpdate(this.agent, frame);
         return frame;
     }
 
@@ -52,6 +57,7 @@ export class ObjectiveStack {
         const count = this.frames.length;
         this.frames = [];
         this.agent?.transcript?.record('objective.clear', { count }, 'objectives');
+        noteObjectiveUpdate(this.agent, null);
         return count;
     }
 

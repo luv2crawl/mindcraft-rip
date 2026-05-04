@@ -63,6 +63,63 @@ export function getNearestStoragePosition(bot, maxDistance = 16) {
     return getLastKnownStoragePosition(bot, maxDistance);
 }
 
+function _positionRecordFromMemory(key, record, source) {
+    if (!record) return null;
+    const pos = Array.isArray(record)
+        ? { x: record[0], y: record[1], z: record[2] }
+        : record;
+    const x = Number(pos.x);
+    const y = Number(pos.y);
+    const z = Number(pos.z);
+    if (!Number.isFinite(x) || !Number.isFinite(y) || !Number.isFinite(z)) return null;
+    return {
+        name: pos.name || key,
+        x,
+        y,
+        z,
+        dimension: pos.dimension ?? pos.dim ?? null,
+        source,
+    };
+}
+
+function _getNamedMemoryPosition(memoryBank, type, key, source) {
+    if (!memoryBank?.recall) return null;
+    return _positionRecordFromMemory(key, memoryBank.recall(type, key), source);
+}
+
+function _isDesignatedBaseName(name) {
+    return String(name || '').toLowerCase().includes('base');
+}
+
+export function getClosestDesignatedBasePosition(bot, memoryBank = null) {
+    if (!memoryBank?.list) return null;
+    const currentDimension = bot?.game?.dimension ?? null;
+    const candidates = [];
+    for (const [key, record] of Object.entries(memoryBank.list('places') || {})) {
+        const candidate = _positionRecordFromMemory(key, record, 'base:places');
+        if (candidate && _isDesignatedBaseName(candidate.name)) candidates.push(candidate);
+    }
+    for (const [key, record] of Object.entries(memoryBank.list('journeymap.waypoints') || {})) {
+        const candidate = _positionRecordFromMemory(key, record, 'base:journeymap');
+        if (candidate && _isDesignatedBaseName(candidate.name)) candidates.push(candidate);
+    }
+    for (const [key, record] of Object.entries(memoryBank.list('storage') || {})) {
+        const candidate = _positionRecordFromMemory(key, record, 'base:storage');
+        if (candidate && _isDesignatedBaseName(candidate.name)) candidates.push(candidate);
+    }
+    const sameDimension = candidates.filter(candidate =>
+        !candidate.dimension || !currentDimension || candidate.dimension === currentDimension
+    );
+    const usable = sameDimension.length > 0 ? sameDimension : candidates;
+    if (usable.length === 0) return null;
+    usable.sort((a, b) => {
+        const botPos = bot?.entity?.position;
+        if (!botPos?.distanceTo) return a.name.localeCompare(b.name);
+        return botPos.distanceTo(new Vec3(a.x, a.y, a.z)) - botPos.distanceTo(new Vec3(b.x, b.y, b.z));
+    });
+    return usable[0];
+}
+
 async function autoLight(bot) {
     if (world.shouldPlaceTorch(bot)) {
         try {
@@ -2810,9 +2867,8 @@ function _miningNeedFor(oreInfo, oreName, currentY) {
     const targetPickaxe = MINING_PICKAXE_BY_TIER[minTier] || `${minTier}_pickaxe`;
     const need = {
         [targetPickaxe]: desiredPickaxes,
-        crafting_table: 1,
     };
-    if (undergroundMining) {
+    if (undergroundMining && oreInfo.key !== 'coal') {
         need.torch = 32;
     }
     return { targetY, deepMining, undergroundMining, desiredPickaxes, minTier, targetPickaxe, need };
@@ -2846,7 +2902,6 @@ export function buildMiningPlanFromInventory(oreName, num, inventory, options = 
             _addCounts(missing, _missingMiningSupplies(inventory, minTier, desiredPickaxes));
         }
     }
-    if ((inventory.crafting_table || 0) < 1) missing.crafting_table = 1;
     if (need.torch && (inventory.torch || 0) < need.torch) {
         missing.torch = need.torch - (inventory.torch || 0);
     }
@@ -2911,8 +2966,37 @@ export function planMiningRun(bot, oreName, num, options = {}) {
         currentY: bot.entity.position.y,
     });
     plan.data.chestPos = chestPos;
+    const entryPlan = selectMiningEntry(bot, oreName, chestPos, options);
+    if (entryPlan.ok) {
+        plan.data.miningEntry = entryPlan.entry;
+        plan.data.direction = entryPlan.direction.label;
+        if (entryPlan.source !== 'current') {
+            plan.message += ` Use mining entry at (${entryPlan.entry.x}, ${entryPlan.entry.y}, ${entryPlan.entry.z}) heading ${entryPlan.direction.label}.`;
+        }
+    } else if (plan.ok) {
+        return objectiveResult({
+            ok: false,
+            reason: 'unsafe_mining_start',
+            message: `Cannot mine ${oreInfo.display} yet; no safe mining entry/descent start was found near the bot.`,
+            need: plan.need,
+            have: plan.have,
+            missing: { safe_mining_start: 1 },
+            recommendedCommands: ['Move away from the chest/base edge to solid ground, then retry !mineOre.'],
+            data: {
+                ...plan.data,
+                miningEntry: null,
+                failure: entryPlan.reason,
+                failurePosition: entryPlan.failurePosition || null,
+                failureBlock: entryPlan.failureBlock || null,
+            },
+        });
+    } else {
+        plan.data.miningEntryFailure = entryPlan;
+    }
     if (chestPos.source === 'nearby') {
         plan.message += ` Using nearest chest at (${chestPos.x}, ${chestPos.y}, ${chestPos.z}); save home_chest to make this explicit.`;
+    } else if (chestPos.source?.startsWith('base:')) {
+        plan.message += ` No nearby chest found; return mined items to designated base "${chestPos.name}" at (${chestPos.x}, ${chestPos.y}, ${chestPos.z}).`;
     }
     return plan;
 }
@@ -2921,6 +3005,7 @@ export function _missingMiningSupplies(inventory, minTier, desiredPickaxes) {
     const targetPickaxe = MINING_PICKAXE_BY_TIER[minTier] || 'stone_pickaxe';
     const eligiblePickaxes = _countEligibleMiningPickaxes(inventory, minTier);
     const craftablePickaxes = _countCraftableMiningPickaxes(inventory, targetPickaxe);
+    const needsPickaxeCrafting = eligiblePickaxes < desiredPickaxes;
     const missing = {};
     const shortPickaxes = Math.max(0, desiredPickaxes - eligiblePickaxes - craftablePickaxes);
     if (shortPickaxes > 0) {
@@ -2934,7 +3019,7 @@ export function _missingMiningSupplies(inventory, minTier, desiredPickaxes) {
             missing[targetPickaxe] = shortPickaxes;
         }
     }
-    if ((inventory.crafting_table || 0) < 1) missing.crafting_table = 1;
+    if (needsPickaxeCrafting && (inventory.crafting_table || 0) < 1) missing.crafting_table = 1;
     return missing;
 }
 
@@ -2942,9 +3027,15 @@ export function getMiningHomeChestPosition(bot, memoryBank = null) {
     if (memoryBank) {
         const recalled = memoryBank.recallPlace('home_chest');
         if (recalled) return { x: recalled[0], y: recalled[1], z: recalled[2], source: 'memory' };
+        const explicitHomeChest =
+            _getNamedMemoryPosition(memoryBank, 'storage', 'home_chest', 'storage:home_chest')
+            || _getNamedMemoryPosition(memoryBank, 'journeymap.waypoints', 'home_chest', 'journeymap:home_chest');
+        if (explicitHomeChest) return explicitHomeChest;
     }
     const nearby = rememberLastStorageBlock(bot, world.getNearestStorageBlock(bot, 32));
-    if (!nearby) return getLastKnownStoragePosition(bot, 64);
+    if (!nearby) {
+        return getClosestDesignatedBasePosition(bot, memoryBank) || getLastKnownStoragePosition(bot, 64);
+    }
     return {
         x: nearby.position.x,
         y: nearby.position.y,
@@ -2972,21 +3063,34 @@ async function _craftMiningPickaxesIfPossible(bot, minTier, desiredPickaxes) {
         } else if (targetPickaxe === 'stone_pickaxe') {
             if ((inventory.cobblestone || 0) < 3 || (inventory.stick || 0) < 2) break;
         }
-        const crafted = await craftRecipe(bot, targetPickaxe, 1);
+        let crafted = false;
+        try {
+            crafted = await craftRecipe(bot, targetPickaxe, 1);
+        } catch (e) {
+            log(bot, `Could not craft ${targetPickaxe} for mining supplies: ${e.message || e}.`);
+            break;
+        }
         if (!crafted) break;
+    }
+}
+
+async function _tryCraftMiningSupply(bot, itemName, count) {
+    try {
+        return await craftRecipe(bot, itemName, count);
+    } catch (e) {
+        log(bot, `Could not craft ${itemName} for mining supplies: ${e.message || e}.`);
+        return false;
     }
 }
 
 export async function prepareMiningSupplies(bot, oreName, chestPos) {
     const oreInfo = getOreInfo(oreName);
     if (!oreInfo) return false;
-    const targetY = getBestY(oreName, Math.floor(bot.entity.position.y));
-    const deepMining = typeof targetY === 'number' && targetY < 0;
-    const desiredPickaxes = deepMining || MINING_TIER_RANK[oreInfo.min_pickaxe] >= MINING_TIER_RANK.iron ? 3 : 2;
-    const minTier = oreInfo.min_pickaxe;
+    const { desiredPickaxes, minTier, need } = _miningNeedFor(oreInfo, oreName, Math.floor(bot.entity.position.y));
 
     let inventory = world.getInventoryCounts(bot);
-    if (_countEligibleMiningPickaxes(inventory, minTier) >= desiredPickaxes && (inventory.crafting_table || 0) >= 1) {
+    if (_countEligibleMiningPickaxes(inventory, minTier) >= desiredPickaxes
+        && (!need.torch || (inventory.torch || 0) >= need.torch)) {
         log(bot, `mineOre: inventory supplies ready (${_countEligibleMiningPickaxes(inventory, minTier)} ${minTier}+ pickaxes, ${inventory.torch || 0} torches, ${inventory.stick || 0} sticks).`);
         return true;
     }
@@ -3008,16 +3112,21 @@ export async function prepareMiningSupplies(bot, oreName, chestPos) {
             await _takeMiningSupplyFromChest(bot, itemName, count);
         }
         await _takeMiningSupplyFromChest(bot, 'stick', 16);
-        await _takeMiningSupplyFromChest(bot, 'torch', 32);
-        await _takeMiningSupplyFromChest(bot, 'coal', 8);
+        if (need.torch) {
+            await _takeMiningSupplyFromChest(bot, 'torch', need.torch);
+            if (oreInfo.key !== 'coal') {
+                await _takeMiningSupplyFromChest(bot, 'coal', 8);
+            }
+        }
     }
 
     inventory = world.getInventoryCounts(bot);
     if ((inventory.stick || 0) < 16 && (inventory.oak_planks || 0) >= 2) {
-        await craftRecipe(bot, 'stick', 4);
+        await _tryCraftMiningSupply(bot, 'stick', 4);
     }
-    if ((inventory.torch || 0) < 32 && (inventory.coal || 0) > 0 && (inventory.stick || 0) > 0) {
-        await craftRecipe(bot, 'torch', 8);
+    inventory = world.getInventoryCounts(bot);
+    if (need.torch && (inventory.torch || 0) < need.torch && (inventory.coal || 0) > 0 && (inventory.stick || 0) > 0) {
+        await _tryCraftMiningSupply(bot, 'torch', Math.ceil((need.torch - (inventory.torch || 0)) / 4));
     }
     await _craftMiningPickaxesIfPossible(bot, minTier, desiredPickaxes);
 
@@ -3028,7 +3137,7 @@ export async function prepareMiningSupplies(bot, oreName, chestPos) {
         log(bot, formatObjectiveResult(plan));
         return false;
     }
-    if ((inventory.crafting_table || 0) < 1) {
+    if (eligiblePickaxes < desiredPickaxes && (inventory.crafting_table || 0) < 1) {
         const plan = buildMiningPlanFromInventory(oreName, 1, inventory, { currentY: bot.entity.position.y });
         log(bot, formatObjectiveResult(plan));
         return false;
@@ -3051,6 +3160,8 @@ export async function prepareMiningRun(bot, oreName, options = {}) {
     }
     if (chestPos.source === 'nearby') {
         log(bot, `No home_chest saved; checking nearest chest at (${chestPos.x}, ${chestPos.y}, ${chestPos.z}) for mining supplies.`);
+    } else if (chestPos.source?.startsWith('base:')) {
+        log(bot, `No nearby chest found; checking designated base "${chestPos.name}" at (${chestPos.x}, ${chestPos.y}, ${chestPos.z}) for mining supplies.`);
     } else {
         log(bot, `Checking home_chest at (${chestPos.x}, ${chestPos.y}, ${chestPos.z}) for mining supplies.`);
     }
@@ -3219,34 +3330,37 @@ async function _staircaseStepDown(bot, dirVec, oreNamesToScan) {
     const headBefore = bot.blockAt(new Vec3(nx, ny + 1, nz));
     const footBefore = bot.blockAt(new Vec3(nx, ny, nz));
     if (_isHazardousFluid(headBefore) || _isHazardousFluid(footBefore)) {
-        log(bot, `Staircase step at (${nx}, ${ny}, ${nz}) hit ${_isHazardousFluid(headBefore) ? headBefore.name : footBefore.name}; aborting.`);
-        return false;
+        const blockName = _isHazardousFluid(headBefore) ? headBefore.name : footBefore.name;
+        log(bot, `Staircase step at (${nx}, ${ny}, ${nz}) hit ${blockName}; aborting.`);
+        return { ok: false, reason: `fluid:${blockName}`, failurePosition: { x: nx, y: ny, z: nz }, failureBlock: blockName };
     }
     // Floor block (what the new foot stands on) at (nx, ny - 1, nz). If it's air-like or fluid,
     // we'd fall further than intended — bail.
     const floorBlock = bot.blockAt(new Vec3(nx, ny - 1, nz));
     if (!floorBlock || _isAirLike(floorBlock) || _isHazardousFluid(floorBlock)) {
         log(bot, `Staircase floor at (${nx}, ${ny - 1}, ${nz}) is ${floorBlock?.name || 'unloaded'}; aborting to avoid falling.`);
-        return false;
+        const blockName = floorBlock?.name || 'unloaded';
+        return { ok: false, reason: `floor:${blockName}`, failurePosition: { x: nx, y: ny - 1, z: nz }, failureBlock: blockName };
     }
 
     await breakBlockAt(bot, nx, ny, nz);
-    if (bot.interrupt_code) return false;
+    if (bot.interrupt_code) return { ok: false, reason: 'interrupted', failurePosition: { x: nx, y: ny, z: nz } };
     await breakBlockAt(bot, nx, ny + 1, nz);
-    if (bot.interrupt_code) return false;
+    if (bot.interrupt_code) return { ok: false, reason: 'interrupted', failurePosition: { x: nx, y: ny, z: nz } };
 
     const headAfter = bot.blockAt(new Vec3(nx, ny + 1, nz));
     const footAfter = bot.blockAt(new Vec3(nx, ny, nz));
     if (!_isPassableForCorridor(headAfter) || !_isPassableForCorridor(footAfter)) {
         log(bot, `Staircase blocked at (${nx}, ${ny}, ${nz}): head=${headAfter?.name}, foot=${footAfter?.name}. Wrong pickaxe tier or unbreakable.`);
-        return false;
+        const blockName = !_isPassableForCorridor(footAfter) ? footAfter?.name : headAfter?.name;
+        return { ok: false, reason: `blocked:${blockName || 'unknown'}`, failurePosition: { x: nx, y: ny, z: nz }, failureBlock: blockName || 'unknown' };
     }
 
     const stepOk = await _goToMinedCell(bot, nx, ny, nz, 'staircase cell');
-    if (bot.interrupt_code) return false;
+    if (bot.interrupt_code) return { ok: false, reason: 'interrupted', failurePosition: { x: nx, y: ny, z: nz } };
     if (!stepOk) {
         log(bot, `Could not step into staircase cell (${nx}, ${ny}, ${nz}).`);
-        return false;
+        return { ok: false, reason: 'step_into_cell_failed', failurePosition: { x: nx, y: ny, z: nz } };
     }
     await pickupNearbyItems(bot);
 
@@ -3260,7 +3374,208 @@ async function _staircaseStepDown(bot, dirVec, oreNamesToScan) {
             oreNamesToScan,
         );
     }
-    return true;
+    return { ok: true, direction: dirVec, position: { x: nx, y: ny, z: nz } };
+}
+
+function _staircaseStepSafetyAt(bot, position, dirVec) {
+    const cy = Math.floor(position.y);
+    const nx = Math.floor(position.x) + dirVec.x;
+    const nz = Math.floor(position.z) + dirVec.z;
+    const ny = cy - 1;
+    const headBefore = bot.blockAt(new Vec3(nx, ny + 1, nz));
+    const footBefore = bot.blockAt(new Vec3(nx, ny, nz));
+    if (_isHazardousFluid(headBefore) || _isHazardousFluid(footBefore)) {
+        return {
+            ok: false,
+            reason: `fluid:${_isHazardousFluid(headBefore) ? headBefore.name : footBefore.name}`,
+            x: nx,
+            y: ny,
+            z: nz,
+        };
+    }
+    const floorBlock = bot.blockAt(new Vec3(nx, ny - 1, nz));
+    if (!floorBlock || _isAirLike(floorBlock) || _isHazardousFluid(floorBlock)) {
+        return {
+            ok: false,
+            reason: `floor:${floorBlock?.name || 'unloaded'}`,
+            x: nx,
+            y: ny,
+            z: nz,
+        };
+    }
+    return { ok: true, x: nx, y: ny, z: nz };
+}
+
+function _staircaseStepSafety(bot, dirVec) {
+    return _staircaseStepSafetyAt(bot, bot.entity.position, dirVec);
+}
+
+function _staircaseDirectionOptions(preferred) {
+    const all = [
+        _directionToVec(preferred?.label || 'south'),
+        _directionToVec('north'),
+        _directionToVec('south'),
+        _directionToVec('east'),
+        _directionToVec('west'),
+    ];
+    const seen = new Set();
+    return all.filter(dir => {
+        const key = `${dir.x},${dir.z}`;
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+    });
+}
+
+function _chooseStaircaseDirectionAt(bot, position, preferred) {
+    for (const dir of _staircaseDirectionOptions(preferred)) {
+        const safety = _staircaseStepSafetyAt(bot, position, dir);
+        if (safety.ok) return dir;
+    }
+    return null;
+}
+
+export function chooseStaircaseDirection(bot, preferred) {
+    return _chooseStaircaseDirectionAt(bot, bot.entity.position, preferred);
+}
+
+function _isStandableMiningStart(bot, x, y, z) {
+    const foot = bot.blockAt(new Vec3(x, y, z));
+    const head = bot.blockAt(new Vec3(x, y + 1, z));
+    const floor = bot.blockAt(new Vec3(x, y - 1, z));
+    return _isAirLike(foot)
+        && _isAirLike(head)
+        && floor
+        && !_isAirLike(floor)
+        && !_isHazardousFluid(floor);
+}
+
+function _isNearPosition(x, y, z, pos, maxDistance) {
+    if (!pos || maxDistance == null) return false;
+    return Math.hypot(x - pos.x, y - pos.y, z - pos.z) <= maxDistance;
+}
+
+function _entryCandidateAt(bot, x, y, z, preferred, source, targetY = null) {
+    if (!_isStandableMiningStart(bot, x, y, z)) {
+        return { ok: false, reason: 'not_standable', failurePosition: { x, y, z } };
+    }
+    const needsDescent = targetY != null && targetY < y - 3;
+    const direction = needsDescent
+        ? _chooseStaircaseDirectionAt(bot, new Vec3(x, y, z), preferred)
+        : preferred;
+    if (!direction) {
+        return { ok: false, reason: 'no_safe_descent_direction', failurePosition: { x, y, z } };
+    }
+    return {
+        ok: true,
+        entry: { x, y, z, source },
+        direction,
+        source,
+    };
+}
+
+export function findNearbyStaircaseStart(bot, preferred, radius = 5, options = {}) {
+    const here = bot.entity.position;
+    const y = Math.floor(here.y);
+    const originX = Math.floor(here.x);
+    const originZ = Math.floor(here.z);
+    const targetY = options.targetY ?? null;
+    const avoidPosition = options.avoidPosition || null;
+    const avoidDistance = options.avoidDistance ?? null;
+    const candidates = [];
+    for (let dx = -radius; dx <= radius; dx++) {
+        for (let dz = -radius; dz <= radius; dz++) {
+            const distance = Math.abs(dx) + Math.abs(dz);
+            if (distance === 0 || distance > radius) continue;
+            const x = originX + dx;
+            const z = originZ + dz;
+            if (_isNearPosition(x, y, z, avoidPosition, avoidDistance)) continue;
+            const candidate = _entryCandidateAt(bot, x, y, z, preferred, 'nearby', targetY);
+            if (!candidate.ok) continue;
+            candidates.push({ x, y, z, direction: candidate.direction, distance });
+        }
+    }
+    candidates.sort((a, b) => a.distance - b.distance || a.x - b.x || a.z - b.z);
+    return candidates[0] || null;
+}
+
+export function selectMiningEntry(bot, oreName, chestPos, options = {}) {
+    const preferred = _directionToVec(options.direction || 'south');
+    const oreInfo = getOreInfo(oreName);
+    if (!oreInfo) {
+        return { ok: false, reason: 'unknown_ore' };
+    }
+    const current = bot.entity.position;
+    const currentY = Math.floor(current.y);
+    const targetY = getBestY(oreName, currentY);
+    const memoryBank = options.memoryBank || null;
+    const remembered = memoryBank?.recallPlace?.('mining_entry');
+    if (remembered) {
+        const [x, y, z] = remembered.map(value => Math.floor(value));
+        const candidate = _entryCandidateAt(bot, x, y, z, preferred, 'memory', targetY);
+        if (candidate.ok) return candidate;
+    }
+
+    const currentCandidate = _entryCandidateAt(
+        bot,
+        Math.floor(current.x),
+        currentY,
+        Math.floor(current.z),
+        preferred,
+        'current',
+        targetY,
+    );
+    const nearChest = _isNearPosition(
+        Math.floor(current.x),
+        currentY,
+        Math.floor(current.z),
+        chestPos,
+        options.chestAvoidDistance ?? 4,
+    );
+    if (currentCandidate.ok && !nearChest) return currentCandidate;
+
+    const nearby = findNearbyStaircaseStart(bot, preferred, options.searchRadius ?? 6, {
+        targetY,
+        avoidPosition: chestPos,
+        avoidDistance: options.chestAvoidDistance ?? 4,
+    });
+    if (nearby) {
+        return {
+            ok: true,
+            entry: { x: nearby.x, y: nearby.y, z: nearby.z, source: 'nearby' },
+            direction: nearby.direction,
+            source: 'nearby',
+        };
+    }
+
+    if (currentCandidate.ok) return currentCandidate;
+    return {
+        ok: false,
+        reason: currentCandidate.reason || 'unsafe_mining_start',
+        failurePosition: currentCandidate.failurePosition || {
+            x: Math.floor(current.x),
+            y: currentY,
+            z: Math.floor(current.z),
+        },
+    };
+}
+
+async function _moveToNearbyStaircaseStart(bot, preferred) {
+    const start = findNearbyStaircaseStart(bot, preferred);
+    if (!start) return { ok: false, reason: 'no_nearby_staircase_start' };
+    log(bot, `No safe staircase step from current block; moving to nearby start (${start.x}, ${start.y}, ${start.z}) and digging ${start.direction.label}.`);
+    try {
+        await goToGoal(bot, new pf.goals.GoalBlock(start.x, start.y, start.z), { nonDestructiveOnly: true, failOnNoPath: true });
+    } catch (err) {
+        log(bot, `Could not move to nearby staircase start (${start.x}, ${start.y}, ${start.z}): ${err.message}.`);
+        return { ok: false, reason: 'path_to_start_failed', failurePosition: { x: start.x, y: start.y, z: start.z } };
+    }
+    if (!_isStandingInBlockCell(bot.entity.position, start.x, start.y, start.z)) {
+        const hereNow = bot.entity.position;
+        log(bot, `Could not stand on nearby staircase start; still at (${Math.floor(hereNow.x)}, ${Math.floor(hereNow.y)}, ${Math.floor(hereNow.z)}).`);
+        return { ok: false, reason: 'start_not_reached', failurePosition: { x: start.x, y: start.y, z: start.z } };
+    }
+    return { ok: true, direction: start.direction, entry: { x: start.x, y: start.y, z: start.z } };
 }
 
 export async function digStaircaseTo(bot, targetY, dirVec, oreNamesToScan = null) {
@@ -3276,34 +3591,85 @@ export async function digStaircaseTo(bot, targetY, dirVec, oreNamesToScan = null
      * @returns {Promise<boolean>}
      */
     const startY = Math.floor(bot.entity.position.y);
+    const start = {
+        x: Math.floor(bot.entity.position.x),
+        y: startY,
+        z: Math.floor(bot.entity.position.z),
+    };
     if (targetY >= startY) {
         log(bot, `digStaircaseTo: target Y=${targetY} not below current Y=${startY}; nothing to do.`);
-        return true;
+        return { ok: true, direction: dirVec, stepsTaken: 0, start, end: start };
     }
     const totalSteps = startY - targetY;
-    log(bot, `Building descending staircase ${dirVec.label}: ${totalSteps} steps from Y=${startY} to Y=${targetY}.`);
+    let activeDir = chooseStaircaseDirection(bot, dirVec);
+    if (!activeDir) {
+        const moved = await _moveToNearbyStaircaseStart(bot, dirVec);
+        if (moved.ok) activeDir = moved.direction;
+        else {
+            log(bot, `No safe staircase start found near (${Math.floor(bot.entity.position.x)}, ${startY}, ${Math.floor(bot.entity.position.z)}).`);
+            return { ok: false, reason: moved.reason, direction: dirVec, stepsTaken: 0, start, end: start, failure: moved };
+        }
+    }
+    if (!activeDir) {
+        log(bot, `No safe staircase start found near (${Math.floor(bot.entity.position.x)}, ${startY}, ${Math.floor(bot.entity.position.z)}).`);
+        return { ok: false, reason: 'no_safe_staircase_start', direction: dirVec, stepsTaken: 0, start, end: start };
+    }
+    if (activeDir.label !== dirVec.label) {
+        log(bot, `Staircase ${dirVec.label} is blocked at the first step; using ${activeDir.label} instead.`);
+    }
+    log(bot, `Building descending staircase ${activeDir.label}: ${totalSteps} steps from Y=${startY} to Y=${targetY}.`);
 
     const SAFETY_CAP = totalSteps + 50;
     let stepsTaken = 0;
     while (!bot.interrupt_code && stepsTaken < SAFETY_CAP) {
         const currentY = Math.floor(bot.entity.position.y);
+        const currentPos = {
+            x: Math.floor(bot.entity.position.x),
+            y: currentY,
+            z: Math.floor(bot.entity.position.z),
+        };
         if (currentY <= targetY) {
             log(bot, `Staircase reached Y=${currentY}.`);
-            return true;
+            return { ok: true, direction: activeDir, stepsTaken, start, end: currentPos };
         }
-        const ok = await _staircaseStepDown(bot, dirVec, oreNamesToScan);
-        if (!ok) {
+        let nextDir = chooseStaircaseDirection(bot, activeDir);
+        if (!nextDir) {
+            const moved = await _moveToNearbyStaircaseStart(bot, activeDir);
+            if (moved.ok) nextDir = moved.direction;
+            else {
+                log(bot, `No safe staircase continuation found at Y=${currentY}.`);
+                return { ok: false, reason: moved.reason, direction: activeDir, stepsTaken, start, end: currentPos, failure: moved };
+            }
+        }
+        if (!nextDir) {
+            log(bot, `No safe staircase continuation found at Y=${currentY}.`);
+            return { ok: false, reason: 'no_safe_staircase_continuation', direction: activeDir, stepsTaken, start, end: currentPos };
+        }
+        if (nextDir.label !== activeDir.label) {
+            log(bot, `Staircase ${activeDir.label} blocked at Y=${currentY}; turning ${nextDir.label}.`);
+            activeDir = nextDir;
+        }
+        const step = await _staircaseStepDown(bot, activeDir, oreNamesToScan);
+        if (!step.ok) {
             log(bot, `Staircase aborted at Y=${currentY} after ${stepsTaken} steps.`);
-            return false;
+            return { ok: false, reason: step.reason, direction: activeDir, stepsTaken, start, end: currentPos, failure: step };
         }
         stepsTaken++;
     }
     if (bot.interrupt_code) {
         log(bot, `Staircase interrupted at Y=${Math.floor(bot.entity.position.y)}.`);
-        return false;
+        return { ok: false, reason: 'interrupted', direction: activeDir, stepsTaken, start, end: {
+            x: Math.floor(bot.entity.position.x),
+            y: Math.floor(bot.entity.position.y),
+            z: Math.floor(bot.entity.position.z),
+        } };
     }
     log(bot, `Staircase safety cap (${SAFETY_CAP}) reached without arriving at Y=${targetY}.`);
-    return false;
+    return { ok: false, reason: 'safety_cap', direction: activeDir, stepsTaken, start, end: {
+        x: Math.floor(bot.entity.position.x),
+        y: Math.floor(bot.entity.position.y),
+        z: Math.floor(bot.entity.position.z),
+    } };
 }
 
 export async function returnToChestAndDeposit(bot, chestPos, oreName, miningEntry) {
@@ -3359,15 +3725,12 @@ export async function mineOreAt(bot, oreName, num, options = {}) {
     }
     if (chestPos.source === 'nearby') {
         log(bot, `No home_chest saved; using nearest chest at (${chestPos.x}, ${chestPos.y}, ${chestPos.z}) for this run.`);
+    } else if (chestPos.source?.startsWith('base:')) {
+        log(bot, `No nearby chest found; using designated base "${chestPos.name}" at (${chestPos.x}, ${chestPos.y}, ${chestPos.z}) for supplies and deposits.`);
     } else {
         log(bot, `mineOre: home_chest at (${chestPos.x}, ${chestPos.y}, ${chestPos.z}).`);
     }
 
-    const requestedEntry = {
-        x: Math.floor(bot.entity.position.x),
-        y: Math.floor(bot.entity.position.y),
-        z: Math.floor(bot.entity.position.z),
-    };
     const suppliesReady = await prepareMiningSupplies(bot, oreName, chestPos);
     if (!suppliesReady) {
         return { ok: false, reason: 'missing_supplies', mined: 0, target: num };
@@ -3379,23 +3742,53 @@ export async function mineOreAt(bot, oreName, num, options = {}) {
         return { ok: false, reason: 'missing_pickaxe', mined: 0, target: num };
     }
     log(bot, `mineOre: pickaxe check ok (have ${pickCheck.has}, needs ${pickCheck.needs}).`);
-    if (Math.floor(bot.entity.position.x) !== requestedEntry.x
-        || Math.floor(bot.entity.position.y) !== requestedEntry.y
-        || Math.floor(bot.entity.position.z) !== requestedEntry.z) {
-        log(bot, `mineOre: returning to requested mining start at (${requestedEntry.x}, ${requestedEntry.y}, ${requestedEntry.z}) after supply prep.`);
-        if (objectiveUpdate) objectiveUpdate('RETURN_TO_START');
-        const returned = await goToPositionChunked(bot, requestedEntry.x, requestedEntry.y, requestedEntry.z, 2);
-        if (!returned) {
-            log(bot, `Could not return to requested mining start after preparing supplies; stopping before digging in the wrong place.`);
-            return { ok: false, reason: 'return_to_start_failed', mined: 0, target: num };
+
+    const entryPlan = selectMiningEntry(bot, oreName, chestPos, {
+        memoryBank: memBank,
+        direction: direction.label,
+    });
+    if (!entryPlan.ok) {
+        log(bot, `FAILED_MINING_START: ${entryPlan.reason} at ${entryPlan.failurePosition ? `(${entryPlan.failurePosition.x}, ${entryPlan.failurePosition.y}, ${entryPlan.failurePosition.z})` : 'unknown position'}.`);
+        return {
+            ok: false,
+            reason: 'unsafe_mining_start',
+            mined: 0,
+            target: num,
+            data: {
+                failure: entryPlan.reason,
+                failurePosition: entryPlan.failurePosition || null,
+                targetY: getBestY(oreName, Math.floor(bot.entity.position.y)),
+                currentY: Math.floor(bot.entity.position.y),
+            },
+        };
+    }
+    if (Math.floor(bot.entity.position.x) !== entryPlan.entry.x
+        || Math.floor(bot.entity.position.y) !== entryPlan.entry.y
+        || Math.floor(bot.entity.position.z) !== entryPlan.entry.z) {
+        log(bot, `mineOre: moving to selected mining entry at (${entryPlan.entry.x}, ${entryPlan.entry.y}, ${entryPlan.entry.z}).`);
+        if (objectiveUpdate) objectiveUpdate('MOVE_TO_ENTRY');
+        const moved = await goToPositionChunked(bot, entryPlan.entry.x, entryPlan.entry.y, entryPlan.entry.z, 1);
+        if (!moved) {
+            log(bot, `FAILED_MINING_START: could not reach selected mining entry (${entryPlan.entry.x}, ${entryPlan.entry.y}, ${entryPlan.entry.z}).`);
+            return {
+                ok: false,
+                reason: 'mining_entry_unreachable',
+                mined: 0,
+                target: num,
+                data: {
+                    failure: 'mining_entry_unreachable',
+                    failurePosition: entryPlan.entry,
+                },
+            };
         }
     }
 
     // Save the mining entry so deposit cycles can return.
     const entry = bot.entity.position;
     const miningEntry = { x: Math.floor(entry.x), y: Math.floor(entry.y), z: Math.floor(entry.z) };
+    let branchDirection = entryPlan.direction || direction;
     if (memBank) memBank.rememberPlace('mining_entry', miningEntry.x, miningEntry.y, miningEntry.z);
-    log(bot, `mineOre: mining_entry saved at (${miningEntry.x}, ${miningEntry.y}, ${miningEntry.z}).`);
+    log(bot, `mineOre: mining_entry saved at (${miningEntry.x}, ${miningEntry.y}, ${miningEntry.z}), heading ${branchDirection.label}.`);
 
     // Descend to the best working Y for this ore via a manual staircase. Pathfinder
     // will dig straight down if asked to descend through stone, which is what we want
@@ -3405,18 +3798,29 @@ export async function mineOreAt(bot, oreName, num, options = {}) {
     if (targetY != null && targetY < startY - 3) {
         log(bot, `mineOre: descending to working Y=${targetY} (best for ${oreInfo.display}).`);
         if (objectiveUpdate) objectiveUpdate('DESCEND');
-        const navOk = await digStaircaseTo(bot, targetY, direction, oreInfo.block_names);
-        if (!navOk) {
+        const descent = await digStaircaseTo(bot, targetY, branchDirection, oreInfo.block_names);
+        if (!descent.ok) {
             const currentY = Math.floor(bot.entity.position.y);
+            const failure = descent.failure || {};
+            const failurePosition = failure.failurePosition || descent.end || null;
+            const failureBlock = failure.failureBlock || null;
+            log(bot, `FAILED_DESCENT: ${descent.reason || failure.reason || 'unknown'} at ${failurePosition ? `(${failurePosition.x}, ${failurePosition.y}, ${failurePosition.z})` : 'unknown position'}.`);
             log(bot, `Staircase descent did not complete; stopping before branch mining at wrong Y=${currentY}.`);
             return {
                 ok: false,
                 reason: 'descent_failed',
                 mined: 0,
                 target: num,
-                data: { targetY, currentY },
+                data: {
+                    targetY,
+                    currentY,
+                    failure: descent.reason || failure.reason || 'unknown',
+                    failurePosition,
+                    failureBlock,
+                },
             };
         }
+        branchDirection = descent.direction || branchDirection;
         // Update the mining entry to where we actually ended up so deposit cycles return here.
         const post = bot.entity.position;
         miningEntry.x = Math.floor(post.x);
@@ -3430,7 +3834,7 @@ export async function mineOreAt(bot, oreName, num, options = {}) {
         log(bot, `mineOre: already at working Y; starting corridor.`);
     }
 
-    log(bot, `mineOre: branch-mining ${direction.label} for ${oreInfo.display}, target ${num}.`);
+    log(bot, `mineOre: branch-mining ${branchDirection.label} for ${oreInfo.display}, target ${num}.`);
     if (objectiveUpdate) objectiveUpdate('BRANCH_MINE');
     const dropKeys = ORE_DROPS[oreInfo.key] || [];
     const oreBlockNames = oreInfo.block_names || [];
@@ -3488,7 +3892,7 @@ export async function mineOreAt(bot, oreName, num, options = {}) {
             continue;
         }
 
-        const collected = await branchMineStep(bot, direction, oreName);
+        const collected = await branchMineStep(bot, branchDirection, oreName);
         if (collected == null) {
             exitReason = `corridor blocked at step ${steps}`;
             break;
@@ -3500,7 +3904,7 @@ export async function mineOreAt(bot, oreName, num, options = {}) {
         }
 
         if (stepsSinceTorch >= TORCH_INTERVAL) {
-            await placeTorchOnWall(bot, direction);
+            await placeTorchOnWall(bot, branchDirection);
             stepsSinceTorch = 0;
         }
     }

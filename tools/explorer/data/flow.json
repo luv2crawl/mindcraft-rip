@@ -1,21 +1,21 @@
 {
   "version": 1,
-  "generatedAt": "2026-05-01",
-  "source": "Grounded against the live src/ tree on 2026-05-01. Verify line ranges with the source-viewer button on each stage card; line numbers drift as code changes.",
+  "generatedAt": "2026-05-03",
+  "source": "Re-grounded against the live src/ tree on 2026-05-03. Verify line ranges with the source-viewer button on each stage card; line numbers drift as code changes.",
   "stages": [
     {
       "id": 1,
       "title": "Startup & Runtime Components",
       "tagline": "Wire up Prompter, History, ActionManager, ObjectiveStack, MemoryBank, SelfPrompter, TranscriptLogger.",
       "files": [
-        { "path": "src/agent/agent.js",     "symbols": ["start", "_setupEventHandlers"], "lines": "24-250" },
-        { "path": "src/models/prompter.js", "symbols": ["constructor", "initExamples"],  "lines": "17-135" },
-        { "path": "src/agent/history.js",   "symbols": ["constructor", "load"],          "lines": "6-28" }
+        { "path": "src/agent/agent.js", "symbols": ["start", "_setupEventHandlers", "resolveMaxResponses"], "lines": "23-279" },
+        { "path": "src/models/prompter.js", "symbols": ["constructor", "initExamples"], "lines": "17-135" },
+        { "path": "src/agent/history.js", "symbols": ["constructor", "load"], "lines": "6-28" }
       ],
       "notes": [
-        "initExamples runs in parallel via Promise.all (prompter.js ~line 112) which keeps startup snappy. Embedding-model init is implicit and not called out in the doc.",
-        "Spawn timeout is hardcoded to settings.spawn_timeout (~lines 120-125 of agent.js); if the bot fails to spawn, the agent exits gracefully.",
-        "Order matches the doc; no startup-time issues observed."
+        "initExamples runs in parallel via Promise.all (prompter.js ~lines 112-122) and now also initializes SkillLibrary alongside conversation/coding examples.",
+        "ObjectiveStack and TranscriptLogger are first-class runtime components initialized before History/Coder/NPC/MemoryBank (agent.js ~lines 58-86).",
+        "Spawn timeout still comes from settings.spawn_timeout; if the bot fails to spawn, the agent exits cleanly after recording lifecycle events."
       ],
       "improvementHooks": ["memory-architectures", "model-routing"]
     },
@@ -24,27 +24,27 @@
       "title": "Incoming Chat",
       "tagline": "Filter, optionally translate, and route player messages to handleMessage().",
       "files": [
-        { "path": "src/agent/agent.js", "symbols": ["_setupEventHandlers", "respondFunc"], "lines": "169-249" }
+        { "path": "src/agent/agent.js", "symbols": ["_setupEventHandlers", "respondFunc"], "lines": "208-248" }
       ],
       "notes": [
-        "respondFunc handles both 'chat' and 'whisper'. Bot-self messages are ignored (~line 181) and configured chatter is filtered (~line 184).",
-        "Chat only triggers when serverProxy.getNumOtherAgents() === 0 (~line 216) — avoids multi-bot conflicts. NOT documented in bot-flow.md.",
-        "handleEnglishTranslation is called twice — once in _setupEventHandlers (~line 198) and again in handleMessage (~line 337). Likely redundant translation budget burn."
+        "respondFunc handles both 'chat' and 'whisper'. Bot-self messages are ignored and settings.only_chat_with still filters configured chatter before any model work.",
+        "Open chat only triggers when serverProxy.getNumOtherAgents() === 0 (agent.js ~lines 244-247), which avoids multi-bot conflicts but remains easy to miss in docs.",
+        "handleEnglishTranslation is still called twice for normal inbound chat: once in respondFunc and again in handleMessage. That is likely redundant translation work."
       ],
       "improvementHooks": ["model-routing"]
     },
     {
       "id": 3,
       "title": "Direct Command Shortcut",
-      "tagline": "If the player typed a valid !command, parse → validate → execute → return. No LLM call.",
+      "tagline": "If the player typed a valid !command, parse, validate, execute, render the result, and return. No LLM call.",
       "files": [
-        { "path": "src/agent/agent.js",          "symbols": ["handleMessage", "containsCommand"],                "lines": "308-330" },
-        { "path": "src/agent/commands/index.js", "symbols": ["containsCommand", "commandExists", "executeCommand"], "lines": "32-259" }
+        { "path": "src/agent/agent.js", "symbols": ["handleMessage", "containsCommand"], "lines": "314-360" },
+        { "path": "src/agent/commands/index.js", "symbols": ["containsCommand", "commandExists", "executeCommand", "renderCommandResult"], "lines": "29-400" }
       ],
       "notes": [
-        "Short-circuits before any model call. Validation, execution, response routing, then return.",
-        "!newAction is special-cased and DOES add the message to history before execution (~line 316). Undocumented exception to the 'no LLM for direct commands' rule.",
-        "Hardcoded regex in containsCommand (~line 29) means malformed commands fail silently rather than erroring."
+        "Short-circuits before any model call. Validation, execution, result rendering, response routing, transcript end event, then return.",
+        "!newAction is still special-cased and DOES add the message to history before execution so generated code has the user's context.",
+        "Forced user commands now save history when !newAction runs or when MemoryBank is dirty, which matters for JourneyMap/storage/route imports."
       ],
       "improvementHooks": ["tool-output-design"]
     },
@@ -53,13 +53,13 @@
       "title": "History Update",
       "tagline": "Add the new turn to History (player→user, system→system, bot→assistant) and persist.",
       "files": [
-        { "path": "src/agent/history.js", "symbols": ["add", "save"],     "lines": "93-144" },
-        { "path": "src/agent/agent.js",   "symbols": ["handleMessage"],   "lines": "357-360" }
+        { "path": "src/agent/history.js", "symbols": ["add", "save"], "lines": "136-202" },
+        { "path": "src/agent/agent.js", "symbols": ["handleMessage"], "lines": "378-390" }
       ],
       "notes": [
-        "OpenAI-style role mapping. Behavior logs from modes are inserted as system messages BEFORE the user request (~lines 348-356 of agent.js).",
-        "Mode behavior log is truncated at MAX_LOG=500 chars (~line 350). Worth checking when a behavior log was the missing context for a bad decision.",
-        "history.save() runs after every add — accumulates churn in high-frequency interactions."
+        "OpenAI-style role mapping. Behavior logs from modes are inserted as system messages BEFORE the user request (agent.js ~lines 378-389).",
+        "Mode behavior log is truncated at MAX_LOG=500 chars. Worth checking when a behavior log was the missing context for a bad decision.",
+        "History.add() does not save by itself; handleMessage persists after the inbound turn and after each response-loop iteration, while forced commands save only for !newAction or dirty MemoryBank."
       ],
       "improvementHooks": ["memory-architectures", "tool-output-design"]
     },
@@ -68,13 +68,13 @@
       "title": "Prompt Preparation",
       "tagline": "Fill the conversing template via replaceStrings: $NAME, $STATS, $INVENTORY, $COMMAND_DOCS, $EXAMPLES, $MEMORY, $CONVO, $LAST_GOALS, …",
       "files": [
-        { "path": "src/models/prompter.js", "symbols": ["promptConvo", "replaceStrings"],         "lines": "137-225" },
-        { "path": "src/utils/examples.js",  "symbols": ["Examples", "createExampleMessage"],      "lines": "65-180" }
+        { "path": "src/models/prompter.js", "symbols": ["promptConvo", "replaceStrings"], "lines": "137-225" },
+        { "path": "src/utils/examples.js", "symbols": ["Examples", "createExampleMessage"], "lines": "65-180" }
       ],
       "notes": [
-        "$STATS aggregates stats + entities + nearbyBlocks (~lines 140-144). Three command calls per prompt — should be cached in self-prompt loops.",
-        "Example retrieval correctly uses latestIntentText() to focus on the most recent user request (the 'recent changes' note in the doc).",
-        "$BLUEPRINTS is filled even when no blueprints exist (yields empty string) — a candidate to drop conditionally to save tokens."
+        "$STATS aggregates stats + entities + nearbyBlocks. $STATS, $INVENTORY, and $EXAMPLES are cached across promptConvo retry attempts, but not across separate response-loop turns.",
+        "Example retrieval uses latestIntentText(), assistant-output overlap, and a small user-intent role boost to focus retrieval on the latest request.",
+        "$BLUEPRINTS is only replaced when agent.npc.constructions exists; otherwise the unknown-placeholder warning can still fire if a profile includes it without constructions."
       ],
       "improvementHooks": ["example-retrieval", "tool-output-design", "memory-architectures"]
     },
@@ -83,8 +83,8 @@
       "title": "LLM Request",
       "tagline": "Send prepared prompt to the chat model. Cooldowns, retries (3x), staleness checks, sanitation.",
       "files": [
-        { "path": "src/models/prompter.js", "symbols": ["promptConvo"],                    "lines": "214-292" },
-        { "path": "src/models/gpt.js",      "symbols": ["sendRequest", "sendVisionRequest"], "lines": "24-90" }
+        { "path": "src/models/prompter.js", "symbols": ["promptConvo"], "lines": "214-292" },
+        { "path": "src/models/gpt.js", "symbols": ["sendRequest", "sendVisionRequest"], "lines": "24-90" }
       ],
       "notes": [
         "Cooldown (~line 219), 3 retries (~line 218), drops stale responses if a newer user message arrived (~lines 220-221, 273-281).",
@@ -96,14 +96,14 @@
     {
       "id": 7,
       "title": "LLM Response Handling",
-      "tagline": "Empty → stop. Chat → reply. Command → truncate to first command, parse, validate, execute, re-prompt.",
+      "tagline": "Empty means stop. Chat replies are routed. Command replies are extracted, executed serially, and fed back before the next prompt.",
       "files": [
-        { "path": "src/agent/agent.js", "symbols": ["handleMessage"], "lines": "364-433" }
+        { "path": "src/agent/agent.js", "symbols": ["handleMessage"], "lines": "394-483" }
       ],
       "notes": [
-        "truncCommandMessage drops everything after the first command (~line 382). The model often emits multi-step plans that get silently discarded.",
-        "Invalid commands add a system error to history and re-prompt (~lines 385-392).",
-        "max_responses comes from settings.max_commands or a caller override (~line 299)."
+        "extractCommandMessages finds every command in a model response and handleMessage executes them in source order; the old first-command truncation behavior is gone.",
+        "Invalid commands add a rendered ERR_COMMAND_MISSING system result and the loop continues to any later queued command.",
+        "max_responses is resolved by resolveMaxResponses(): explicit caller overrides win, normal user messages cap at 1, and self-prompts with active objectives can use settings.max_commands."
       ],
       "improvementHooks": ["reasoning-loop", "tool-output-design"]
     },
@@ -112,14 +112,14 @@
       "title": "Command Execution",
       "tagline": "Dispatch to commands/{actions,queries}.js, record transcript events, return result string.",
       "files": [
-        { "path": "src/agent/commands/index.js",   "symbols": ["executeCommand", "parseCommandMessage"], "lines": "32-259" },
-        { "path": "src/agent/commands/actions.js", "symbols": [],                                         "lines": "1-50" },
-        { "path": "src/agent/commands/queries.js", "symbols": [],                                         "lines": "1-50" }
+        { "path": "src/agent/commands/index.js", "symbols": ["executeCommand", "parseCommandMessage", "normalizeCommandResult", "renderCommandResult"], "lines": "29-400" },
+        { "path": "src/agent/commands/actions.js", "symbols": [], "lines": "1-60" },
+        { "path": "src/agent/commands/queries.js", "symbols": [], "lines": "1-80" }
       ],
       "notes": [
-        "Strict argument validation: name, count, type, domain checks (~lines 126-170 of index.js).",
-        "Action and query commands share the same dispatcher; isAction() helper distinguishes them for mode logic (~line 184).",
-        "No automatic cap on command output size — each command is responsible for self-limiting. Easy place for a context-blowing surprise."
+        "Strict argument validation remains: name, count, type, domain checks, and item/block existence checks.",
+        "Command returns now pass through normalizeCommandResult/renderCommandResult so legacy strings get stable OK/ERR_* prefixes before entering chat/history.",
+        "Transcript command results are capped at 4000 chars, but prompt-facing command output is still mostly the rendered command text; individual commands still need concise outputs."
       ],
       "improvementHooks": ["tool-output-design", "eval-observability"]
     },
@@ -128,12 +128,12 @@
       "title": "Reasoning & Re-Prompt Loop",
       "tagline": "After each command, append result as a system turn and prompt the model again. Capped by max_commands.",
       "files": [
-        { "path": "src/agent/agent.js", "symbols": ["handleMessage"], "lines": "364-433" }
+        { "path": "src/agent/agent.js", "symbols": ["handleMessage", "resolveMaxResponses"], "lines": "23-483" }
       ],
       "notes": [
-        "The for loop at ~line 364 IS the reasoning loop. Three interrupt-injection points (~lines 346, 365, 395).",
-        "Self-prompt + user-message collision: max_responses is clamped to 1 to return control quickly (~lines 362-363).",
-        "No explicit reflection step — the model just gets the next system turn and infers what went wrong from raw output."
+        "The for loop in handleMessage is still the reasoning loop; it now has an inner command loop for multiple commands emitted by one model response.",
+        "resolveMaxResponses makes response caps goal-aware: self-prompts with active objective states can use configured max_commands, while normal user messages stay capped to one.",
+        "No explicit reflection step exists yet; the model gets rendered command results and must infer recovery unless a command provides recommended next steps."
       ],
       "improvementHooks": ["reasoning-loop", "long-horizon-skills"]
     },
@@ -142,13 +142,13 @@
       "title": "Modes & Autonomous Follow-Up",
       "tagline": "300ms tick: update modes, run self-prompter, handle death/idle/disconnect events.",
       "files": [
-        { "path": "src/agent/modes.js",        "symbols": ["ModeController", "initModes", "update", "flushBehaviorLog"],  "lines": "440-548" },
-        { "path": "src/agent/self_prompter.js","symbols": ["SelfPrompter", "handleLoad", "startLoop", "shouldInterrupt"], "lines": "1-145" },
-        { "path": "src/agent/agent.js",        "symbols": ["startEvents", "update"],                                       "lines": "503-596" }
+        { "path": "src/agent/modes.js", "symbols": ["ModeController", "initModes", "update", "flushBehaviorLog"], "lines": "440-548" },
+        { "path": "src/agent/self_prompter.js", "symbols": ["SelfPrompter", "handleLoad", "startLoop", "shouldInterrupt"], "lines": "1-145" },
+        { "path": "src/agent/agent.js", "symbols": ["startEvents", "update"], "lines": "554-647" }
       ],
       "notes": [
-        "300ms tick (~line 575). flushBehaviorLog returns + clears the accumulated behavior text per tick.",
-        "Death event grabs the position into MemoryBank and triggers handleMessage with a death system prompt (~lines 537-559).",
+        "300ms tick is implemented as a serialized async loop rather than setInterval, so update() calls do not overlap if one tick runs long.",
+        "Death event grabs the position into MemoryBank.places and triggers handleMessage with a death system prompt.",
         "Self-prompt loop stops after MAX_NO_COMMAND=3 consecutive empty responses (~line 64)."
       ],
       "improvementHooks": ["reasoning-loop", "long-horizon-skills"]
@@ -156,17 +156,17 @@
     {
       "id": 11,
       "title": "Memory System",
-      "tagline": "Three layers: recent History.turns, long-term History.memory summary, structured MemoryBank, plus TranscriptLogger for observability.",
+      "tagline": "Recent History.turns, long-term History.memory summary, typed MemoryBank namespaces, ObjectiveStack, plus TranscriptLogger for observability.",
       "files": [
-        { "path": "src/agent/history.js",          "symbols": ["add", "save", "load", "summarizeMemories", "appendFullHistory"], "lines": "6-174" },
-        { "path": "src/agent/memory_bank.js",      "symbols": ["MemoryBank"],                                                     "lines": "1-25" },
-        { "path": "src/agent/transcript_logger.js","symbols": ["TranscriptLogger", "record"],                                     "lines": "1-68" }
+        { "path": "src/agent/history.js", "symbols": ["add", "save", "load", "summarizeMemories", "appendFullHistory"], "lines": "6-237" },
+        { "path": "src/agent/memory_bank.js", "symbols": ["MemoryBank"], "lines": "1-156" },
+        { "path": "src/agent/transcript_logger.js", "symbols": ["TranscriptLogger", "record"], "lines": "1-120" }
       ],
       "notes": [
-        "When turns exceed settings.max_messages, an older chunk is removed and queued for summarization. The chunk is also archived to bots/{name}/histories/.",
-        "History.memory is hard-capped at 500 chars with the comment 'Compress it more next time' (~lines 55-57). This is where most long-horizon coherence is being lost.",
-        "MemoryBank is a flat key→value store; it grows unbounded across sessions if the bot keeps naming places.",
-        "TranscriptLogger covers chat/model/command/memory/lifecycle events — the foundation for any future eval harness."
+        "When turns exceed settings.max_messages, an older chunk is removed, filtered for durable memory, queued for summarization, and archived to bots/{name}/histories/.",
+        "History.memory is still hard-capped at 500 chars, now with timeout/requeue behavior around summarization failures.",
+        "MemoryBank is no longer a flat place map: it has typed namespaces for places, JourneyMap waypoints, routes, storage, observations, and pending state. It still lacks pruning/semantic retrieval.",
+        "TranscriptLogger covers chat/model/command/memory/lifecycle/objective events, which is enough scaffolding for replay/eval work."
       ],
       "improvementHooks": ["memory-architectures", "eval-observability"]
     },
@@ -179,40 +179,41 @@
         { "path": "src/agent/commands/actions.js", "symbols": [], "lines": "1-100" }
       ],
       "notes": [
-        "Each command emits its own free-text result; there is no shared response schema or error-code vocabulary.",
-        "No truncation at the dispatcher level — a 50KB chest dump could blow context if a command misbehaves.",
-        "ActionManager.getBotOutputSummary chops the MIDDLE of long outputs, which is exactly where the most informative tail messages tend to live."
+        "Command outputs now go through a shared normalization/rendering layer with stable OK/ERR_* prefixes, but many command implementations still return legacy free-text.",
+        "Transcript logging caps oversized command results, but the prompt-facing command result still depends on each command/action keeping its output concise.",
+        "ActionManager.getBotOutputSummary now keeps both first and final output snippets for long logs; the remaining gap is preserving enough structured failure detail in only 500 chars."
       ],
       "improvementHooks": ["tool-output-design", "eval-observability"]
     },
     {
       "id": 13,
       "title": "Multi-Model Layer / Prompter Internals",
-      "tagline": "Prompter routes promptConvo / promptCoding / promptMemSaving / promptVision to per-profile chat/code/vision/embedding models.",
+      "tagline": "Prompter routes promptConvo / promptCoding / promptNewActionPlan / promptMemSaving / promptVision to per-profile chat/code/vision/embedding models.",
       "files": [
-        { "path": "src/models/prompter.js",   "symbols": ["promptConvo", "promptCoding", "promptMemSaving", "promptVision"], "lines": "214-398" },
-        { "path": "src/models/_model_map.js", "symbols": ["selectAPI", "createModel"],                                        "lines": "33-89" },
-        { "path": "src/models/gpt.js",        "symbols": ["GPT", "sendRequest", "sendVisionRequest"],                         "lines": "1-90" }
+        { "path": "src/models/prompter.js", "symbols": ["promptConvo", "promptCoding", "promptNewActionPlan", "promptMemSaving", "promptVision"], "lines": "231-450" },
+        { "path": "src/models/_model_map.js", "symbols": ["selectAPI", "createModel"], "lines": "33-89" },
+        { "path": "src/models/gpt.js", "symbols": ["GPT", "sendRequest", "sendVisionRequest"], "lines": "1-90" }
       ],
       "notes": [
         "_model_map.js auto-loads every adapter in src/models/ and infers the API from the model name prefix.",
         "All adapters expose sendRequest(turns, systemMessage) and sendVisionRequest(...). New providers = new file with a static prefix.",
-        "Easy/cheap calls (memory summary, bot-responder, intent classify) currently use the same chat_model as the main reasoning step — clear cost win available."
+        "Easy/cheap calls (memory summary, bot-responder, new-action planning) currently use the same chat_model as the main reasoning step; no dynamic routing layer exists yet."
       ],
       "improvementHooks": ["model-routing", "eval-observability"]
     }
   ],
   "doc_drift": [
-    "Stage 2: chat only fires when getNumOtherAgents() === 0 — multi-bot avoidance is undocumented.",
-    "Stage 2: handleEnglishTranslation is called twice (event handler + handleMessage) — likely a redundant translation cost.",
-    "Stage 3: !newAction adds the message to history before executing, breaking the 'direct commands skip the LLM path' description.",
-    "Stage 5: latestIntentText() filtering rules are undocumented detail that affects example retrieval quality.",
-    "Stage 10: 300ms tick interval and the mode-update-then-self-prompter ordering aren't called out in the doc.",
-    "Stage 11: 500-char memory truncation is enforced in code but presented in the doc as just 'a short text summary' — that's the actual ceiling.",
-    "Stage 12: 'individual commands are responsible for conciseness' is the de-facto policy — there is no dispatcher-level cap.",
-    "Stage 13: Prompter also owns promptCoding and promptVision; the doc only highlights conversation prompting and memory-saving."
+    "Stage 2: chat only fires when getNumOtherAgents() === 0; multi-bot avoidance is still easy to miss in docs.",
+    "Stage 2: handleEnglishTranslation is called twice (event handler + handleMessage), likely a redundant translation cost.",
+    "Stage 3: !newAction adds the message to history before executing, breaking the simple 'direct commands skip history' description.",
+    "Stage 5: latestIntentText(), assistant-output overlap, and retry-local replacement caching are undocumented details that affect prompt shape and latency.",
+    "Stage 7: runtime now executes every command extracted from one model response, while the default prompt and command docs still instruct the model to use at most one command per response.",
+    "Stage 10: the 300ms serialized update loop and mode-update-then-self-prompter ordering aren't called out in the doc.",
+    "Stage 11: 500-char History.memory truncation is enforced in code, but MemoryBank is now typed and stores JourneyMap/routes/storage/observations beyond the prose summary.",
+    "Stage 12: command results now get OK/ERR_* normalization, but prompt-facing output still has no global renderer-side size budget.",
+    "Stage 13: Prompter also owns promptCoding, promptNewActionPlan, and promptVision; the doc only highlights conversation prompting and memory-saving."
   ],
   "diagram": {
-    "mermaid": "flowchart TD\n  A[Player chat or whisper]:::input --> B{Bot self?}\n  B -->|yes| X[ignore]\n  B -->|no| C{Filtered or ignored?}\n  C -->|yes| X\n  C -->|no| D[2 - Translate, record, handleMessage]\n  D --> E{3 - Direct command?}\n  E -->|yes| F[8 - Validate and execute]\n  F --> Y[Reply to chat]\n  E -->|no| G[4 - History.add player turn]\n  G --> H[5 - Prompter.replaceStrings + examples]\n  H --> I[6 - chat_model.sendRequest]\n  I --> J{7 - Response type?}\n  J -->|empty| K[stop loop]\n  J -->|chat| L[History.add assistant + reply]\n  L --> Y\n  J -->|command| M[truncate to first cmd]\n  M --> N[8 - Parse, validate, execute]\n  N --> O[9 - Add result as system turn]\n  O -->|under cap| H\n  O -->|cap hit| K\n  subgraph SIDE [Background and Memory]\n    P[10 - 300ms tick: modes + self_prompter]\n    Q[11 - History.memory summary + MemoryBank]\n    R[11 - TranscriptLogger]\n  end\n  P -. behavior log .-> G\n  P -. self prompts .-> D\n  Q -. MEMORY .-> H\n  N -. events .-> R\n  I -. events .-> R\n  classDef input fill:#1f3a5f,stroke:#5b9dff,color:#fff;"
+    "mermaid": "flowchart TD\n  A[Player chat or whisper]:::input --> B{Bot self?}\n  B -->|yes| X[ignore]\n  B -->|no| C{Filtered or ignored?}\n  C -->|yes| X\n  C -->|no| D[2 - Translate, record, handleMessage]\n  D --> E{3 - Direct command?}\n  E -->|yes| F[8 - Validate, execute, render]\n  F --> Y[Reply to chat]\n  E -->|no| G[4 - History.add player turn]\n  G --> H[5 - Prompter.replaceStrings + examples]\n  H --> I[6 - chat_model.sendRequest]\n  I --> J{7 - Response type?}\n  J -->|empty| K[stop loop]\n  J -->|chat| L[History.add assistant + reply]\n  L --> Y\n  J -->|command| M[extract all commands]\n  M --> N[8 - Parse, validate, execute serially]\n  N --> O[9 - Add rendered result as system turn]\n  O -->|more commands| N\n  O -->|under response cap| H\n  O -->|cap hit| K\n  subgraph SIDE [Background, Memory, Objectives]\n    P[10 - 300ms serialized tick: modes + self_prompter]\n    Q[11 - History.memory + typed MemoryBank + ObjectiveStack]\n    R[11 - TranscriptLogger]\n  end\n  P -. behavior log .-> G\n  P -. self prompts .-> D\n  Q -. MEMORY and state .-> H\n  N -. events .-> R\n  I -. events .-> R\n  classDef input fill:#1f3a5f,stroke:#5b9dff,color:#fff;"
   }
 }

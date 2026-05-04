@@ -1,15 +1,15 @@
 {
   "version": 1,
-  "generatedAt": "2026-05-01",
-  "source": "Curated from agent-research literature (Voyager, Reflexion, GITM, JARVIS-1, DEPS, MemGPT, ReAct, Generative Agents, CRITIC) and Anthropic's effective-agents writeups, mapped to the Mindcraft codebase as of 2026-05-01.",
+  "generatedAt": "2026-05-03",
+  "source": "Curated from agent-research literature (Voyager, Reflexion, GITM, JARVIS-1, DEPS, MemGPT, ReAct, Generative Agents, CRITIC) and Anthropic's effective-agents writeups, re-mapped to the Mindcraft codebase as of 2026-05-03.",
   "quick_wins": [
     {
       "id": "qw-recent-failures",
       "title": "Add a $RECENT_FAILURES placeholder to the conversing prompt",
       "impact": "high",
       "effort": "low",
-      "summary": "In Prompter.replaceStrings(), render the last 3 failed command outputs (system turns whose text starts with '!!Code threw exception!!' or contains 'does not exist') as a $RECENT_FAILURES block. Surfacing recent failures verbally is the cheapest known agent fix and stops the model from re-issuing the same broken command.",
-      "touches": ["Prompter.replaceStrings", "History", "ActionManager.getBotOutputSummary"],
+      "summary": "In Prompter.replaceStrings(), render the last 3 failed command results whose rendered text starts with ERR_ or whose normalized result has ok=false as a $RECENT_FAILURES block. Command errors now have stable codes, so the cheap Reflexion-style fix can key off ERR_NO_PATH / ERR_BAD_ARGS / ERR_COMMAND_MISSING instead of brittle prose.",
+      "touches": ["Prompter.replaceStrings", "History", "commands/index.js normalizeCommandResult"],
       "links": ["https://arxiv.org/abs/2303.11366", "https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents"]
     },
     {
@@ -17,17 +17,17 @@
       "title": "Replace the 500-char memory truncation with structured memory sections",
       "impact": "high",
       "effort": "low",
-      "summary": "history.js currently slice(0, 500)s the running summary. Replace with three labeled buckets (FACTS, OPEN_GOALS, MISTAKES_TO_AVOID), each capped independently, and stop hard-truncating mid-sentence. Single highest-leverage change to long-horizon coherence per JARVIS-1 and MemGPT.",
-      "touches": ["History.summarizeMemories", "Prompter.promptMemSaving", "profiles/defaults/_default.json saving_memory prompt"],
+      "summary": "history.js now filters low-value turns and requeues failed summaries, but the running History.memory string is still slice(0, 500). Replace it with labeled buckets (FACTS, OPEN_GOALS, MISTAKES_TO_AVOID), each capped independently, and stop hard-truncating mid-sentence.",
+      "touches": ["History.summarizeMemories", "History._filterTurnsForMemory", "Prompter.promptMemSaving", "profiles/defaults/_default.json saving_memory prompt"],
       "links": ["https://arxiv.org/abs/2311.05997", "https://arxiv.org/abs/2310.08560"]
     },
     {
       "id": "qw-multi-command",
-      "title": "Decide on multi-command-per-response policy and tell the model",
+      "title": "Resolve the one-command policy mismatch",
       "impact": "med",
       "effort": "low",
-      "summary": "agent.handleMessage uses truncCommandMessage(res) and silently drops anything after the first command. Either parse-and-queue all commands serially or explicitly tell the model 'only one command per response' in profile.conversing. Picking one stops the current quiet drift where the model emits plans the runtime ignores.",
-      "touches": ["Agent.handleMessage", "commands/index.js containsCommand", "profile.conversing prompt"],
+      "summary": "Agent.handleMessage now extracts and executes every command in one model response, but the default prompt and command docs still say 'Use at most one command in each response.' Decide whether serial multi-command execution is supported behavior or only a defensive fallback, then align tests, prompts, and UI docs so the model is not trained against the runtime.",
+      "touches": ["Agent.handleMessage", "commands/index.js extractCommandMessages", "commands/index.js getCommandDocs", "profiles/defaults/_default.json conversing prompt"],
       "links": ["https://www.anthropic.com/engineering/writing-tools-for-agents"]
     },
     {
@@ -35,8 +35,8 @@
       "title": "Add an $OBJECTIVES placeholder so the model sees its own stack",
       "impact": "high",
       "effort": "low",
-      "summary": "ObjectiveStack.getSummary() already produces a clean rendered stack but Prompter.replaceStrings doesn't inject it. Add $OBJECTIVES near $SELF_PROMPT in profile.conversing. Today the model has zero visibility into the frames it pushed/popped — that's why it forgets multi-step plans.",
-      "touches": ["Prompter.replaceStrings", "ObjectiveStack.getSummary", "profile.conversing"],
+      "summary": "ObjectiveStack.getSummary() already produces a clean rendered stack and !objectives exposes it manually, but Prompter.replaceStrings does not inject it. Add $OBJECTIVES near $SELF_PROMPT in profile.conversing. Today the stack affects response caps but is mostly invisible to the model during normal reasoning.",
+      "touches": ["Prompter.replaceStrings", "ObjectiveStack.getSummary", "queries.js !objectives", "profile.conversing"],
       "links": ["https://arxiv.org/abs/2305.17144"]
     },
     {
@@ -44,8 +44,8 @@
       "title": "Detect repeated failing commands and inject a sharp interrupt",
       "impact": "med",
       "effort": "low",
-      "summary": "Hash the last N (command, args) pairs in handleMessage. If the same one repeats with non-success output, append a system turn 'You just tried X and it failed. Try a different approach or ask for help.' before the next promptConvo call. ~30 lines of code that kills the most common failure mode.",
-      "touches": ["Agent.handleMessage", "History"],
+      "summary": "Hash the last N normalized command messages plus rendered result codes in handleMessage. If the same command repeats with ok=false, append a system turn 'You just tried X and it failed with ERR_Y. Try a different approach or ask for help.' before the next promptConvo call.",
+      "touches": ["Agent.handleMessage", "commands/index.js normalizeCommandResult", "History"],
       "links": ["https://arxiv.org/abs/2303.11366"]
     }
   ],
@@ -53,7 +53,7 @@
     {
       "id": "reasoning-loop",
       "title": "Reasoning Loop & Control Flow",
-      "summary": "The current loop is single-command-per-turn with no explicit reflect/replan step. Voyager, Reflexion, and DEPS all show that adding a structured 'observe → reflect → act' beat dramatically improves long-horizon success in Minecraft.",
+      "summary": "The current loop now supports serial command extraction and goal-aware response caps, but still has no explicit reflect/replan step. Voyager, Reflexion, and DEPS all show that adding a structured observe -> reflect -> act beat dramatically improves long-horizon success in Minecraft.",
       "recommendations": [
         {
           "id": "rl-reflexion",
@@ -64,9 +64,9 @@
         },
         {
           "id": "rl-deps",
-          "title": "Adopt DEPS-style describe → explain → plan → select for !newAction",
-          "detail": "When the model calls !newAction, route through a two-stage prompt: first ask the chat model for a plan with sub-goals + a chosen sub-goal (DEPS 'select'), then pass that plan into promptCoding. Today's single-shot coder.js skips the planning stage and tries to write a 200-line skill chain in one go — exactly the failure DEPS measured.",
-          "touches": ["Coder.generateCode", "Prompter (new promptPlan)", "ObjectiveStack.push"],
+          "title": "Harden DEPS planning for !newAction with JSON validation",
+          "detail": "A DEPS-style promptNewActionPlan now runs before promptCoding and its raw output is injected into Coder. The next gap is validating that the planner returns parseable JSON with goal, sub_goals, selected_sub_goal, and selection_reason, then falling back or re-prompting when it does not. Without validation, bad planner text becomes binding context for code generation.",
+          "touches": ["Coder.generateCode", "Coder._formatNewActionPlanForCoding", "Prompter.promptNewActionPlan"],
           "links": ["https://arxiv.org/abs/2302.01560"]
         },
         {
@@ -85,9 +85,9 @@
         },
         {
           "id": "rl-goal-aware-cap",
-          "title": "Make max_commands goal-aware",
-          "detail": "settings.max_commands is flat. In handleMessage, raise it when self_prompt is true and the active objective is in_progress, drop it to 1 when responding to a user. Stops the bot from monologuing in social chat while letting it grind through a mining run autonomously.",
-          "touches": ["Agent.handleMessage", "settings.js", "ObjectiveStack.peek"],
+          "title": "Render objective state into prompts, not only response-cap logic",
+          "detail": "resolveMaxResponses already uses active ObjectiveStack state to decide whether self-prompts may consume settings.max_commands. The model still does not see the stack unless it calls !objectives. Add $OBJECTIVES to the prompt and update objective frames from more workflows so the cap policy and the reasoning context are based on the same state.",
+          "touches": ["Agent.resolveMaxResponses", "Prompter.replaceStrings", "ObjectiveStack.getSummary", "profile.conversing"],
           "links": ["https://www.anthropic.com/research/building-effective-agents"]
         }
       ]
@@ -95,27 +95,27 @@
     {
       "id": "tool-output-design",
       "title": "Tool / Command Output Design",
-      "summary": "Anthropic's 'Writing tools for agents' guide explicitly calls out compact, structured, signal-rich responses as one of the highest-leverage agent improvements. Mindcraft's command outputs are mostly free-text concatenated from bot.output — noisy and ambiguous.",
+      "summary": "Mindcraft now has a normalization/rendering layer for command results and stable OK/ERR_* prefixes, but command implementations are still a mix of legacy strings and formatted objective results. The next leverage is making outputs compact, structured, and consistently recoverable.",
       "recommendations": [
         {
           "id": "td-structured-result",
-          "title": "Return a structured result object from every command, then render to text",
-          "detail": "Wrap each command return in {ok, summary, data, next_hints} and have a single renderer convert to the system-message text. Gives you machine-readable output for evals AND the ability to programmatically detect partial success (e.g. 'collected 3 of 5 oak_log').",
-          "touches": ["src/agent/commands/actions.js", "Agent.handleMessage where execute_res is fed back"],
+          "title": "Finish migrating commands to structured results before rendering",
+          "detail": "commands/index.js can normalize {ok, code, summary, data, next_hints}, and several objective/route/storage paths already emit structured-looking results. Finish the migration so every command returns the object shape first, with renderCommandResult as the only prompt-facing text renderer. This gives evals machine-readable result data and gives the model consistent recovery hints.",
+          "touches": ["src/agent/commands/actions.js", "src/agent/commands/queries.js", "commands/index.js normalizeCommandResult"],
           "links": ["https://www.anthropic.com/engineering/writing-tools-for-agents"]
         },
         {
           "id": "td-tail-truncation",
-          "title": "Replace midpoint truncation in getBotOutputSummary with tail-biased",
-          "detail": "ActionManager.getBotOutputSummary chops the middle of long bot.output dumps, deleting the most informative final stack lines and the actual 'why it failed' message. Replace with a tail-biased truncation (last 800 chars + structured error code) — the head of mineflayer logs is almost always pathfinder spam.",
-          "touches": ["ActionManager.getBotOutputSummary"],
+          "title": "Move action-output truncation into the shared result renderer",
+          "detail": "ActionManager.getBotOutputSummary now keeps both the first and final snippets, which fixes the old middle-loss problem. The remaining issue is that truncation happens before command normalization and is capped at 500 chars with no structured error fields. Move this into the command-result renderer so failures preserve code, summary, tail, and next_hints predictably.",
+          "touches": ["ActionManager.getBotOutputSummary", "commands/index.js renderCommandResult"],
           "links": ["https://www.anthropic.com/engineering/writing-tools-for-agents"]
         },
         {
           "id": "td-error-codes",
-          "title": "Standardize error codes the model can pattern-match on",
-          "detail": "Use prefixes like ERR_NO_PATH, ERR_BLOCKED, ERR_TOOL_MISSING, ERR_INVENTORY_FULL, ERR_OUT_OF_RANGE in actions.js return strings, and document them in $COMMAND_DOCS. Models are extremely good at conditioning on stable token patterns — far more reliable than parsing English.",
-          "touches": ["src/agent/commands/actions.js", "src/agent/commands/index.js getCommandDocs"],
+          "title": "Document recovery semantics for ERR_* codes",
+          "detail": "Stable codes now exist in normalizeCommandResult and command docs mention OK / ERR_NO_PATH / ERR_BAD_ARGS / ERR_COMMAND_MISSING / ERR_INTERRUPTED / ERR_PARTIAL. The next step is a small recovery table in $COMMAND_DOCS: ERR_NO_PATH -> try nearer waypoint or ask; ERR_BAD_ARGS -> inspect docs; ERR_PARTIAL -> continue from reported state. Codes are most useful when paired with explicit next moves.",
+          "touches": ["src/agent/commands/index.js getCommandDocs", "src/agent/commands/actions.js", "src/agent/commands/queries.js"],
           "links": ["https://www.anthropic.com/engineering/writing-tools-for-agents"]
         },
         {
@@ -127,9 +127,9 @@
         },
         {
           "id": "td-abort",
-          "title": "Add !abort with a reason, distinct from !stop",
-          "detail": "Today the model has !stop but no way to declare 'this objective is unachievable'. Add !abort('reason') that pops the top objective frame with status 'failed' + the supplied reason, and document it. Without this, the model retries blocked plans until self_prompter's MAX_NO_COMMAND kills the loop entirely.",
-          "touches": ["src/agent/commands/actions.js", "ObjectiveStack.pop", "SelfPrompter"],
+          "title": "Add !abortObjective(reason), distinct from !stop and !clearObjectives",
+          "detail": "The repo now has !clearObjectives for cancelling the stack, but the model still lacks a way to mark the top objective as failed with a reason. Add !abortObjective('reason') that pops or updates the top frame with status failed and records the reason to transcript/memory. That preserves learning signal instead of simply clearing state.",
+          "touches": ["src/agent/commands/actions.js", "ObjectiveStack.pop", "TranscriptLogger", "SelfPrompter"],
           "links": ["https://arxiv.org/abs/2305.11738"]
         }
       ]
@@ -137,7 +137,7 @@
     {
       "id": "memory-architectures",
       "title": "Memory Architectures",
-      "summary": "Mindcraft has three memory surfaces (turns[], a 500-char prose summary, MemoryBank's coordinate map) but no semantic separation and no retrieval. JARVIS-1, MemGPT, and the 2025 A-MEM/Mem0 lines all converge on hierarchical episodic + semantic memory with vector recall.",
+      "summary": "Mindcraft now has a filtered 500-char History.memory plus typed MemoryBank namespaces for places, JourneyMap waypoints, routes, storage, observations, and pending state. It still has no semantic retrieval or durable episodic/semantic split.",
       "recommendations": [
         {
           "id": "mem-three-stores",
@@ -163,7 +163,7 @@
         {
           "id": "mem-bank-gc",
           "title": "Garbage-collect MemoryBank places by recency + utility",
-          "detail": "MemoryBank.rememberPlace currently grows unbounded. Add usage timestamps and periodic prune that keeps last_death_position, home_chest, and the K most-recently-referenced names while archiving the rest. Otherwise long-running bots accumulate dozens of stale 'temp_dig_site' entries that pollute $MEMORY.",
+          "detail": "MemoryBank now stores typed namespaces, not just places, and can accumulate JourneyMap waypoints, routes, storage records, observations, and pending route issues. Add usage timestamps and namespace-specific pruning rules while always preserving last_death_position, home_chest, active routes, and recent pending issues.",
           "touches": ["MemoryBank.rememberPlace", "MemoryBank (new pruneStale)"],
           "links": ["https://stevekinney.com/writing/agent-memory-systems"]
         },
@@ -179,12 +179,12 @@
     {
       "id": "example-retrieval",
       "title": "Example Retrieval & Prompt Steering",
-      "summary": "examples.js already does embedding-based retrieval with a word-overlap fallback and intent normalization, which is solid. Biggest gaps are hybrid scoring tuning, negative examples, and intent classification before retrieval.",
+      "summary": "examples.js already does embedding-based retrieval with a word-overlap fallback, intent normalization, assistant-output overlap, and a small user-intent role boost. Biggest gaps are hybrid scoring tuning, negative examples, and intent classification before retrieval.",
       "recommendations": [
         {
           "id": "ex-hybrid-bm25",
           "title": "Add hybrid BM25 + embedding scoring with a learned weight",
-          "detail": "embeddingScore mixes cosine + 0.25 × wordOverlap with hardcoded weights. Replace wordOverlapScore with proper BM25 over the example corpus (small, computable at load time) and store the blend weight in profile so you can sweep it. Hybrid retrieval consistently beats pure dense on small heterogeneous corpora — exactly Mindcraft's regime.",
+          "detail": "embeddingScore mixes cosine similarity with assistant-output word overlap and a small role boost; fallbackScore uses intent/output word overlap. Replace the word-overlap component with proper BM25 over the example corpus and store the blend weight in profile so you can sweep it. Hybrid retrieval consistently beats pure dense on small heterogeneous corpora - exactly Mindcraft's regime.",
           "touches": ["src/utils/examples.js embeddingScore", "src/utils/text.js wordOverlapScore"],
           "links": ["https://www.pinecone.io/learn/hybrid-search-intro/"]
         },
@@ -204,16 +204,16 @@
         },
         {
           "id": "ex-embed-assistant",
-          "title": "Embed assistant output too, not just the intent",
-          "detail": "Examples.load only embeds exampleIntentText. Also embed assistantOutputText and add a small bonus when the latest user message looks like a continuation rather than a new intent (a follow-up question). Cheap to add; helps multi-turn conversations where the user references a previous action.",
-          "touches": ["Examples.load", "Examples.embeddingScore"],
+          "title": "Embed assistant output or add richer continuation scoring",
+          "detail": "Assistant output now contributes word-overlap scoring, but Examples.load still embeds only exampleIntentText. Add a second embedding for assistantOutputText and use it when the latest user message looks like a continuation rather than a new intent. Cheap to add; helps multi-turn conversations where the user references a previous action.",
+          "touches": ["Examples.load", "Examples.embeddingScore", "Examples.assistantOutputText"],
           "links": ["https://research.google/pubs/dense-passage-retrieval-for-open-domain-question-answering/"]
         },
         {
           "id": "ex-cache-retries",
-          "title": "Cache the latest example-set hash to skip retrieval on retry attempts",
-          "detail": "Prompter.promptConvo retries up to 3 times on hallucination. Today each retry re-embeds and re-retrieves. Cache the selected example set keyed on normalized intent text so retries are free; invalidate only when intent changes. Removes a few hundred ms from every retry burst.",
-          "touches": ["Prompter.promptConvo", "Examples.getRelevant"],
+          "title": "Extend example caching beyond promptConvo retries",
+          "detail": "Prompter.promptConvo now caches $EXAMPLES inside one retry burst via stableReplacements. The next cache boundary is the handleMessage/self-prompt loop: reuse the selected example set while the normalized latest intent is unchanged, and invalidate only when a new user/system intent arrives.",
+          "touches": ["Prompter.promptConvo", "Prompter.replaceStrings", "Examples.getRelevant"],
           "links": ["https://www.anthropic.com/engineering/effective-context-engineering-for-ai-agents"]
         }
       ]
@@ -221,7 +221,7 @@
     {
       "id": "long-horizon-skills",
       "title": "Long-Horizon Planning & Skill Libraries",
-      "summary": "ObjectiveStack and SkillLibrary exist but are read-only at runtime — the bot never grows new skills, only retrieves docs. Voyager's central thesis is that the skill library should be a write-back store that compounds over a play session.",
+      "summary": "ObjectiveStack, mining-objective helpers, and SkillLibrary exist, but the bot still does not grow new reusable skills at runtime. Voyager's central thesis is that the skill library should be a write-back store that compounds over a play session.",
       "recommendations": [
         {
           "id": "sk-writable",
@@ -263,7 +263,7 @@
     {
       "id": "eval-observability",
       "title": "Eval & Observability",
-      "summary": "TranscriptLogger captures rich telemetry but there's no regression suite, no replay tool, and no LLM-as-judge harness. Without these, every prompt change is a coin flip.",
+      "summary": "TranscriptLogger captures rich telemetry, including model/command/memory/objective events, but there is still no replay tool, golden trajectory suite, or LLM-as-judge harness. Without these, every prompt/runtime change is hard to validate.",
       "recommendations": [
         {
           "id": "ev-replay",
@@ -289,7 +289,7 @@
         {
           "id": "ev-objective-metrics",
           "title": "Emit structured progress metrics per objective frame",
-          "detail": "ObjectiveStack.pop already records to transcript. Also compute (duration_ms, commands_issued, retries, inventory_delta) per frame and log as objective.metrics. Gives a per-task efficiency view that's far more actionable than 'did the bot eventually finish'.",
+          "detail": "ObjectiveStack already records push/update/pop events to transcript. Also compute duration_ms, commands_issued, retries, inventory_delta, and final result code per frame and log them as objective.metrics. Gives a per-task efficiency view that's far more actionable than 'did the bot eventually finish'.",
           "touches": ["ObjectiveStack.pop", "TranscriptLogger"],
           "links": ["https://arxiv.org/html/2507.21504v1"]
         },
@@ -305,13 +305,13 @@
     {
       "id": "model-routing",
       "title": "Multi-Model Routing & Cost / Latency",
-      "summary": "Prompter already supports separate chat/code/vision/embedding models from profile, but routes statically. Modern cascade and speculative-cascade work shows large wins from dynamic per-call routing.",
+      "summary": "Prompter supports separate chat/code/vision/embedding models from profile, and now has a new-action planning call, but routes most text calls statically through chat_model. Modern cascade and speculative-cascade work shows large wins from dynamic per-call routing.",
       "recommendations": [
         {
           "id": "mr-cheap-housekeeping",
           "title": "Route 'easy' calls (memory summary, bot-responder, intent classify) to a cheap model",
-          "detail": "promptMemSaving and promptShouldRespondToBot use this.chat_model — that's overkill. Add profile.cheap_model and route all non-action calls there. Anthropic's effective-agents writeup is explicit: reserve the strong model for the actual reasoning step, not the housekeeping prompts.",
-          "touches": ["Prompter constructor (add cheap_model)", "Prompter.promptMemSaving", "Prompter.promptShouldRespondToBot"],
+          "detail": "promptMemSaving, promptShouldRespondToBot, and promptNewActionPlan all use this.chat_model. Add profile.cheap_model and route non-action or pre-action planning calls there when stakes are low. Reserve the strong model for main reasoning, high-stakes command selection, and code verification.",
+          "touches": ["Prompter constructor (add cheap_model)", "Prompter.promptMemSaving", "Prompter.promptShouldRespondToBot", "Prompter.promptNewActionPlan"],
           "links": ["https://www.anthropic.com/research/building-effective-agents"]
         },
         {
@@ -324,8 +324,8 @@
         {
           "id": "mr-stakes-escalator",
           "title": "Add a confidence-based escalator for command selection",
-          "detail": "When the model emits a command, ask the cheap model 'Is this high-stakes (mining, combat, building) or low-stakes (chat, query)?' If high-stakes and the original generation was from a cheap model, re-prompt with the strong model before executing. Cuts cost on the long tail of trivial calls without sacrificing the dangerous ones.",
-          "touches": ["Agent.handleMessage (post-generation hook)", "Prompter (new promptStakesClassify)"],
+          "detail": "When the model emits a command, classify the command/result context as high-stakes (mining, combat, irreversible building, route digging) or low-stakes (chat/query). If high-stakes and the generation came from a cheap model, re-prompt with the strong model before executing. This pairs naturally with ObjectiveStack status and stable ERR_* command codes.",
+          "touches": ["Agent.handleMessage", "Prompter (new promptStakesClassify)", "ObjectiveStack"],
           "links": ["https://openreview.net/forum?id=AAl89VNNy1"]
         },
         {

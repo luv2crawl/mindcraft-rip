@@ -1,6 +1,8 @@
-import { writeFileSync, readFileSync, mkdirSync, existsSync } from 'fs';
+import { writeFileSync, readFileSync, mkdirSync, existsSync, renameSync } from 'fs';
+import path from 'path';
 import { NPCData } from './npc/data.js';
 import settings from './settings.js';
+import { saveWorldMemory } from './world_memory.js';
 
 
 export class History {
@@ -34,13 +36,22 @@ export class History {
 
     async summarizeMemories(turns) {
         console.log("Storing memories...");
+        const memoryTurns = this._filterTurnsForMemory(turns);
         this.agent.transcript?.record('memory.summary.start', {
-            turn_count: turns?.length ?? 0
+            turn_count: turns?.length ?? 0,
+            filtered_turn_count: memoryTurns.length
         }, 'history');
+        if (memoryTurns.length === 0) {
+            this.agent.transcript?.record('memory.summary.skipped', {
+                reason: 'no_durable_turns',
+                turn_count: turns?.length ?? 0
+            }, 'history');
+            return true;
+        }
         const timeoutMs = settings.memory_summary_timeout_ms ?? 20000;
         try {
             this.memory = await this._withTimeout(
-                this.agent.prompter.promptMemSaving(turns),
+                this.agent.prompter.promptMemSaving(memoryTurns),
                 timeoutMs,
                 `Memory summarization timed out after ${timeoutMs}ms.`
             );
@@ -63,6 +74,38 @@ export class History {
             memory: this.memory
         }, 'history');
         return true;
+    }
+
+    _filterTurnsForMemory(turns = []) {
+        return (turns || []).filter(turn => !this._isLowValueMemoryTurn(turn));
+    }
+
+    _isLowValueMemoryTurn(turn) {
+        const content = String(turn?.content || '').trim();
+        if (content.length === 0) return true;
+        const lower = content.toLowerCase();
+        if (turn?.role === 'system') {
+            return [
+                '(auto message)your previous action',
+                'recent behaviors log:',
+                '*command docs',
+                'action output:',
+                'code output:',
+                '!!code threw exception!!',
+                'code execution timed out',
+                'command !',
+                'ok: agent stopped',
+                'err_interrupted:',
+                'pathstopped:',
+            ].some(pattern => lower.includes(pattern));
+        }
+        if (turn?.role === 'assistant') {
+            return lower === '\t'
+                || lower === 'received.'
+                || lower.includes('!stop')
+                || lower.includes('cancelling any remaining actions');
+        }
+        return false;
     }
 
     _withTimeout(promise, timeoutMs, timeoutMessage) {
@@ -133,6 +176,7 @@ export class History {
 
     async save() {
         try {
+            await this.flushPendingSummary();
             const data = {
                 memory: this.memory,
                 turns: this.turns,
@@ -140,12 +184,13 @@ export class History {
                 self_prompt: this.agent.self_prompter.isStopped() ? null : this.agent.self_prompter.prompt,
                 taskStart: this.agent.task.taskStartTime,
                 last_sender: this.agent.last_sender,
-                memory_bank: this.agent.memory_bank?.getJson?.() || {},
             };
-            writeFileSync(this.memory_fp, JSON.stringify(data, null, 2));
+            this._atomicWriteJson(this.memory_fp, data);
+            saveWorldMemory(this.agent);
             console.log('Saved memory to:', this.memory_fp);
             this.agent.transcript?.record('memory.save', {
                 path: this.memory_fp,
+                world_memory_path: this.agent.world_memory_path || null,
                 turn_count: this.turns.length,
                 has_self_prompt: data.self_prompt != null
             }, 'history');
@@ -159,6 +204,19 @@ export class History {
         }
     }
 
+    async flushPendingSummary() {
+        if (this.pending_summary) {
+            await this.pending_summary.catch(() => {});
+        }
+    }
+
+    _atomicWriteJson(filePath, data) {
+        mkdirSync(path.dirname(filePath), { recursive: true });
+        const tmp = `${filePath}.tmp-${process.pid}`;
+        writeFileSync(tmp, JSON.stringify(data, null, 2), 'utf8');
+        renameSync(tmp, filePath);
+    }
+
     load() {
         try {
             if (!existsSync(this.memory_fp)) {
@@ -168,9 +226,6 @@ export class History {
             const data = JSON.parse(readFileSync(this.memory_fp, 'utf8'));
             this.memory = data.memory || '';
             this.turns = data.turns || [];
-            if (this.agent.memory_bank && data.memory_bank) {
-                this.agent.memory_bank.loadJson(data.memory_bank);
-            }
             console.log('Loaded memory:', this.memory);
             this.agent.transcript?.record('memory.load', {
                 path: this.memory_fp,
@@ -180,11 +235,19 @@ export class History {
             return data;
         } catch (error) {
             console.error('Failed to load history:', error);
+            const backup = `${this.memory_fp}.corrupt-${new Date().toISOString().replace(/[:.]/g, '-')}`;
+            try {
+                renameSync(this.memory_fp, backup);
+            } catch {}
+            this.memory = '';
+            this.turns = [];
+            this.agent.memory_bank?.loadJson?.({});
             this.agent.transcript?.record('memory.load.failure', {
                 path: this.memory_fp,
+                backup,
                 error: error?.message || String(error)
             }, 'history');
-            throw error;
+            return null;
         }
     }
 

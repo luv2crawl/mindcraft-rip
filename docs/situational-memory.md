@@ -48,17 +48,35 @@ that shape.
 
 ## Persistence
 
-`History.save()` writes the typed memory bank into:
+Structured world facts are saved separately from bot chat/session memory. The
+bot first resolves a world identity from the best available source:
+
+1. `settings.world_id`
+2. JourneyMap bridge `/world`, if available
+3. `settings.world_path` or `settings.server_path`
+4. protocol/server metadata as a low-confidence fallback
+
+Durable world memory is written to:
+
+```text
+bots/_worlds/{world_id}/memory.json
+```
+
+`History.save()` still writes chat/session state into:
 
 ```text
 bots/{bot_name}/memory.json
 ```
 
-`History.load()` restores it when memory loading is enabled. Corrupt or missing
-typed namespaces are repaired to empty objects during load.
+Legacy `memory_bank` data in `bots/{bot_name}/memory.json` is migrated into the
+world memory file when the resolved identity is high confidence. Corrupt or
+missing typed namespaces are repaired to empty objects during load.
 
 This is separate from `History.memory`, the natural-language conversation
-summary injected into prompts as `$MEMORY`.
+summary injected into prompts as `$TEXT_MEMORY` or the text portion of
+`$MEMORY`. Structured world facts are injected through `$STRUCTURED_MEMORY` or
+the structured portion of `$MEMORY`, and they are not fed back into the
+natural-language summary prompt.
 
 ## JourneyMap Workflow
 
@@ -66,7 +84,13 @@ JourneyMap v1 integration uses an optional localhost bridge. The bot setting is:
 
 ```js
 journeymap_bridge_url: "http://127.0.0.1:47892"
+auto_sync_journeymap_on_start: false
 ```
+
+Startup sync is opt-in. When enabled, the bot imports bridge waypoints after
+world memory loads, logs `journeymap.startup_sync.*` transcript events, saves
+world memory if waypoints changed, and warns in chat only if the bridge is
+unavailable.
 
 Commands:
 
@@ -76,8 +100,9 @@ Commands:
 - `!goToWaypoint(name)`: navigates to an imported waypoint.
 - `!exportWaypoint(name)`: exports a known place, route endpoint, waypoint, or storage marker to the bridge.
 
-If the bridge is unavailable, commands return `journeymap_bridge_unavailable`
-and recommend `!importJourneyMapLocation(...)`.
+If the bridge is unavailable, commands return a normalized
+`ERR_JOURNEYMAP_BRIDGE_UNAVAILABLE` result and recommend
+`!importJourneyMapLocation(...)`.
 
 Valid pasted location strings can have reordered fields:
 
@@ -127,7 +152,8 @@ non-destructive movement, the bot stops, saves `pending.route_issue`, and report
 recommended recovery commands. `allow_dig_once` applies only to the current
 blocked segment and expires immediately after that segment attempt.
 
-Structured route failure reasons include:
+Structured route failure reasons are normalized into `ERR_*` command-result
+codes before they are fed back into history. Common raw reasons include:
 
 - `route_blocked`
 - `no_path`
@@ -166,7 +192,8 @@ move items between containers.
 
 ## Output Style
 
-New commands use structured objective-style output where possible:
+New commands use structured objective-style output where possible. The command
+dispatcher normalizes that output before the next prompt sees it:
 
 ```text
 OK: ok
@@ -177,11 +204,10 @@ Data: x: 10, y: 64, z: -20
 or:
 
 ```text
-FAILED: route_blocked
+ERR_ROUTE_BLOCKED: route_blocked
 Route "mine_path" is blocked at segment 4. I stopped before digging.
 Recommended: !continueRoute("mine_path", "retry") then !continueRoute("mine_path", "skip_segment") then !continueRoute("mine_path", "allow_dig_once")
 Data: segment: 4
 ```
 
 This keeps command results useful both for humans and for the next prompt loop.
-

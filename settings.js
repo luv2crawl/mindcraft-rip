@@ -67,6 +67,12 @@ const settings = {
     "nav_chunk_distance": 80,   // target chunk size (blocks)
     "nav_chunk_retry_limit": 2, // retries per chunk before giving up that chunk
     "journeymap_bridge_url": "http://127.0.0.1:47892", // optional local JourneyMap companion bridge
+    "world_id": null, // optional canonical id for this Minecraft world. Best way to scope durable map/storage memory.
+    "server_path": null, // optional local server root; used to derive world identity from server.properties.
+    "world_path": null, // optional direct local world save path; used to derive world identity.
+    "load_world_memory": true, // load durable world-scoped MemoryBank facts independently of chat memory
+    "warn_on_low_confidence_world_id": true, // chat a warning when durable world identity is only a weak fallback
+    "auto_sync_journeymap_on_start": false, // opt-in: import JourneyMap bridge waypoints after world memory loads
 
     "log_all_prompts": true, // log ALL prompts to file
     "transcript_logging": true, // append JSONL runtime transcript events to ./bots/{bot}/transcripts

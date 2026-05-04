@@ -9,6 +9,7 @@ import { promises as fs } from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { selectAPI, createModel } from './_model_map.js';
+import { ensureSessionMemory, formatSessionMemory } from '../agent/session_memory.js';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -134,7 +135,35 @@ export class Prompter {
         }
     }
 
-    async replaceStrings(prompt, messages, examples=null, to_summarize=[], last_goals=null, cachedReplacements=null) {
+    _memoryContext(messages = null) {
+        const latestUser = (messages || []).slice().reverse().find(msg => msg.role === 'user')?.content || '';
+        const latest = latestUser || (messages || []).slice().reverse().find(msg => msg.role !== 'system')?.content || '';
+        const sessionMemory = ensureSessionMemory(this.agent);
+        return {
+            latestUserMessage: latestUser,
+            latestMessage: latest,
+            activeObjective: this.agent.objectives?.peek?.() || null,
+            activeObjectiveSummary: sessionMemory.activeObjectiveSummary || null,
+            currentAction: this.agent.actions?.currentActionLabel || '',
+            currentCommandName: sessionMemory.currentCommandName || sessionMemory.lastCommand || '',
+            currentResourceTarget: sessionMemory.currentResourceTarget || this._extractResourceTarget(latest),
+            dimension: this.agent.bot?.game?.dimension ?? null,
+            position: this.agent.bot?.entity?.position || null,
+            lastCommandResultCode: sessionMemory.lastCommandResultCode || null,
+            lastCommandResultData: sessionMemory.lastCommandResultData || {},
+            sessionMemory,
+        };
+    }
+
+    _extractResourceTarget(text = '') {
+        const lower = String(text || '').toLowerCase();
+        const commandMatch = lower.match(/!(?:mineore|planminingrun|prepareminingrun|findinstorage|restockfromstorage|takefromchest|depositall|craftrecipe|getcraftingplan)\("([^"]+)"/);
+        if (commandMatch) return commandMatch[1];
+        const intentMatch = lower.match(/\b(?:mine|find|restock|take|withdraw|craft|gather|collect|need|missing)\s+([a-z0-9_ -]{3,40})/);
+        return intentMatch ? intentMatch[1].trim().replace(/\s+/g, '_') : null;
+    }
+
+    async replaceStrings(prompt, messages, examples=null, to_summarize=[], last_goals=null, cachedReplacements=null, options={}) {
         prompt = prompt.replaceAll('$NAME', this.agent.name);
 
         if (prompt.includes('$STATS')) {
@@ -173,8 +202,29 @@ export class Prompter {
             });
             prompt = prompt.replaceAll('$EXAMPLES', exampleMessage);
         }
-        if (prompt.includes('$MEMORY'))
-            prompt = prompt.replaceAll('$MEMORY', this.agent.history.memory);
+        if (prompt.includes('$TEXT_MEMORY')) {
+            prompt = prompt.replaceAll('$TEXT_MEMORY', this.agent.history.memory || '');
+        }
+        if (prompt.includes('$STRUCTURED_MEMORY')) {
+            const memoryContext = this._memoryContext(messages);
+            const structuredMemory = this.agent.memory_bank?.getPromptSummary?.(memoryContext) || '';
+            const sessionMemory = formatSessionMemory(memoryContext.sessionMemory);
+            const memory = [sessionMemory, structuredMemory].filter(Boolean).join('\n');
+            prompt = prompt.replaceAll('$STRUCTURED_MEMORY', memory ? `Structured memory:\n${memory}` : '');
+        }
+        if (prompt.includes('$MEMORY')) {
+            const textMemory = this.agent.history.memory || '';
+            const includeStructured = options.includeStructuredMemory !== false;
+            const memoryContext = includeStructured ? this._memoryContext(messages) : null;
+            const structuredMemory = includeStructured
+                ? this.agent.memory_bank?.getPromptSummary?.(memoryContext) || ''
+                : '';
+            const sessionMemory = includeStructured ? formatSessionMemory(memoryContext.sessionMemory) : '';
+            const memory = [textMemory, (sessionMemory || structuredMemory) ? `Structured memory:\n${[sessionMemory, structuredMemory].filter(Boolean).join('\n')}` : '']
+                .filter(Boolean)
+                .join('\n');
+            prompt = prompt.replaceAll('$MEMORY', memory);
+        }
         if (prompt.includes('$TO_SUMMARIZE'))
             prompt = prompt.replaceAll('$TO_SUMMARIZE', stringifyTurns(to_summarize));
         if (prompt.includes('$CONVO'))
@@ -347,10 +397,44 @@ export class Prompter {
         }
     }
 
+    async promptNewActionPlan(messages) {
+        await this.checkCooldown();
+        let prompt = this.profile.new_action_planning;
+        if (!prompt) {
+            prompt = 'Plan the requested !newAction. Return concise JSON with goal, sub_goals, selected_sub_goal, and selection_reason. Do not write code.\n$SELF_PROMPT\nSummarized memory:\'$MEMORY\'\n$STATS\n$INVENTORY\n$CODE_DOCS\n$EXAMPLES\nConversation:';
+        }
+        prompt = await this.replaceStrings(prompt, messages, this.coding_examples);
+
+        const start = Date.now();
+        this.agent.transcript?.record('model.request', {
+            kind: 'new_action_plan',
+            model: this.chat_model?.model_name,
+            message_count: messages?.length ?? 0,
+            prompt
+        }, 'prompter');
+        try {
+            let resp = await this.chat_model.sendRequest(messages, prompt);
+            await this._saveLog(prompt, messages, resp, 'newActionPlan');
+            this.agent.transcript?.record('model.response', {
+                kind: 'new_action_plan',
+                duration_ms: Date.now() - start,
+                response: resp
+            }, 'prompter');
+            return resp;
+        } catch (error) {
+            this.agent.transcript?.record('model.failure', {
+                kind: 'new_action_plan',
+                duration_ms: Date.now() - start,
+                error: error?.message || String(error)
+            }, 'prompter');
+            throw error;
+        }
+    }
+
     async promptMemSaving(to_summarize) {
         await this.checkCooldown();
         let prompt = this.profile.saving_memory;
-        prompt = await this.replaceStrings(prompt, null, null, to_summarize);
+        prompt = await this.replaceStrings(prompt, null, null, to_summarize, null, null, { includeStructuredMemory: false });
         const start = Date.now();
         this.agent.transcript?.record('model.request', {
             kind: 'memory',

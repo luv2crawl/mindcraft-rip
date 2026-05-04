@@ -34,6 +34,7 @@ readable diagnostics when something goes wrong.
   - `list(type)`
   - `search(type, query)`
 - Persisted typed memory through `History.save/load` in `bots/{bot}/memory.json`.
+- Added a dirty flag so direct user commands that mutate structured memory can force a save before returning.
 - Added namespaces for `places`, `journeymap.waypoints`, `routes`, `storage`, `observations`, and `pending`.
 - Added focused docs in `docs/situational-memory.md`.
 
@@ -83,7 +84,7 @@ readable diagnostics when something goes wrong.
 - Added an objective stack for long-running tasks so mining can report plan, supply prep, descent, branch mining, deposit, completion, and failure states.
 - Added structured objective results with `ok`, `reason`, `need`, `have`, `missing`, recommended commands, and result data.
 - Updated mining runs to return structured results instead of a plain boolean.
-- Fixed a critical false-success case: a run that mines `0/30` ore after hitting max steps is now reported as `FAILED: partial`, not `OK: done`.
+- Fixed a critical false-success case: a run that mines `0/30` ore after hitting max steps is now reported as a partial failure, not `OK: done`.
 - Stopped branch mining at the wrong Y level when staircase descent fails. The bot now fails fast with `descent_failed` instead of mining around the base/water level and pretending it completed the request.
 - Mining output now includes useful scalar result data such as mined count, target count, and exit reason.
 
@@ -131,8 +132,16 @@ The chest contains 54 stacks across 27 item types:
 - Replaced first-command truncation in `Agent.handleMessage()` with explicit command-span extraction.
 - Model responses that contain multiple commands now queue and execute valid commands serially in source order.
 - The full assistant response is preserved in history so emitted plans and trailing commands are observable.
-- Invalid or hallucinated commands stop the current queue and feed an error back into the prompt loop instead of silently dropping later text.
+- Invalid or hallucinated commands add an `ERR_COMMAND_MISSING` system result and the queue continues to any later extracted command.
+- Command returns are normalized and rendered with stable prefixes such as `OK`, `ERR_BAD_ARGS`, `ERR_COMMAND_MISSING`, `ERR_NO_PATH`, `ERR_INTERRUPTED`, and `ERR_PARTIAL`.
+- Transcript command results are capped to avoid unbounded logs, while prompt-facing command output remains the command renderer's responsibility.
 - Updated conversation prompts and command docs to tell the model to use at most one command per response and wait for command results before issuing the next command.
+
+## Planning And Response Caps
+
+- Added a DEPS-style `promptNewActionPlan` step before `!newAction` code generation.
+- The planner selects an immediate sub-goal and injects that plan as binding context for `promptCoding`.
+- Added `resolveMaxResponses()` so normal user messages stay capped to one response, while self/system prompts with active objective frames can use configured `max_commands`.
 
 ## Tooling And Tests
 

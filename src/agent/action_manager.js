@@ -143,6 +143,19 @@ export class ActionManager {
             this.currentActionFn = null;
             clearTimeout(TIMEOUT);
             this.cancelResume();
+            const interrupted = this.agent.bot.interrupt_code;
+            const timedout = this.timedout;
+            if (interrupted && !timedout) {
+                this.timedout = false;
+                this.agent.clearBotLogs();
+                this.agent.transcript?.record('action.end', {
+                    actionLabel,
+                    interrupted: true,
+                    timedout: false,
+                    output: ''
+                }, 'action_manager');
+                return { success: false, message: '', interrupted: true, timedout: false };
+            }
             console.error("Code execution triggered catch:", err);
             // Log the full stack trace
             console.error(err.stack);
@@ -155,7 +168,6 @@ export class ActionManager {
                 'Error: ' + errString + '\n' +
                 'Stack trace:\n' + stack + '\n';
 
-            let interrupted = this.agent.bot.interrupt_code;
             this.agent.clearBotLogs();
             this.timedout = false;
             if (!interrupted) {
@@ -165,9 +177,10 @@ export class ActionManager {
                 actionLabel,
                 error: errString,
                 message,
-                interrupted
+                interrupted,
+                timedout
             }, 'action_manager');
-            return { success: false, message, interrupted, timedout: false };
+            return { success: false, message, interrupted, timedout };
         }
     }
 

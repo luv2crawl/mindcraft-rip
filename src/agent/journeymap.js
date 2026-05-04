@@ -13,6 +13,7 @@ function parseScalar(value) {
 }
 
 export function parseJourneyMapLocation(text) {
+    const now = new Date().toISOString();
     const body = String(text || '').match(/\[(.*)\]/)?.[1] ?? String(text || '');
     const fields = {};
     for (const part of body.split(',')) {
@@ -41,7 +42,9 @@ export function parseJourneyMapLocation(text) {
             z: fields.z,
             dimension: fields.dim ?? fields.dimension ?? null,
             source: 'journeymap_import',
-            importedAt: new Date().toISOString(),
+            importedAt: now,
+            updatedAt: now,
+            verifiedAt: now,
             raw: String(text || ''),
         },
     };
@@ -89,6 +92,7 @@ export async function postBridgeMarker(marker) {
 
 export function normalizeBridgeWaypoint(raw) {
     if (!raw) return null;
+    const now = new Date().toISOString();
     const name = String(raw.name || raw.id || raw.label || '').trim();
     const x = Number(raw.x ?? raw.pos?.x);
     const yRaw = raw.y ?? raw.pos?.y;
@@ -102,8 +106,49 @@ export function normalizeBridgeWaypoint(raw) {
         z,
         dimension: raw.dimension ?? raw.dim ?? null,
         source: 'journeymap_bridge',
-        importedAt: new Date().toISOString(),
+        importedAt: now,
+        updatedAt: now,
+        verifiedAt: now,
         raw,
     };
 }
 
+function equivalentWaypoint(a, b) {
+    return a?.x === b?.x
+        && (a?.y ?? null) === (b?.y ?? null)
+        && a?.z === b?.z
+        && (a?.dimension ?? null) === (b?.dimension ?? null);
+}
+
+export function mergeJourneyMapWaypoints(memoryBank, rawWaypoints = [], { source = 'journeymap_bridge' } = {}) {
+    const stats = { imported: 0, updated: 0, unchanged: 0, skipped: 0 };
+    for (const raw of rawWaypoints || []) {
+        const normalized = normalizeBridgeWaypoint(raw);
+        if (!normalized) {
+            stats.skipped++;
+            continue;
+        }
+        const existing = memoryBank.recall('journeymap.waypoints', normalized.name);
+        const merged = {
+            ...(existing || {}),
+            ...normalized,
+            name: existing?.name || normalized.name,
+            label: existing?.label ?? normalized.label,
+            labels: existing?.labels ?? normalized.labels,
+            aliases: existing?.aliases ?? normalized.aliases,
+            source,
+            updatedAt: normalized.updatedAt,
+            verifiedAt: normalized.verifiedAt,
+        };
+        if (!existing) {
+            memoryBank.remember('journeymap.waypoints', normalized.name, merged);
+            stats.imported++;
+        } else if (!equivalentWaypoint(existing, merged) || existing.source !== merged.source || existing.verifiedAt !== merged.verifiedAt || !existing.updatedAt) {
+            memoryBank.remember('journeymap.waypoints', normalized.name, merged);
+            stats.updated++;
+        } else {
+            stats.unchanged++;
+        }
+    }
+    return stats;
+}

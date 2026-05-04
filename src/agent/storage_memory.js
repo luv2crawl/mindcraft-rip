@@ -13,6 +13,8 @@ export function aggregateContainerItems(items) {
 
 export function makeStorageRecord(name, block, items = [], extra = {}) {
     const pos = block.position || block;
+    const now = new Date().toISOString();
+    const contentsIndexedAt = extra.contentsIndexedAt || extra.indexedAt || now;
     return {
         name,
         key: storageKeyFromPosition(pos),
@@ -20,9 +22,12 @@ export function makeStorageRecord(name, block, items = [], extra = {}) {
         x: pos.x,
         y: pos.y,
         z: pos.z,
-        dimension: extra.dimension || null,
+        dimension: extra.dimension ?? null,
         counts: aggregateContainerItems(items),
-        indexedAt: new Date().toISOString(),
+        contentsIndexedAt,
+        indexedAt: contentsIndexedAt,
+        updatedAt: extra.updatedAt || now,
+        verifiedAt: extra.verifiedAt || null,
         source: extra.source || 'storage_index',
     };
 }
@@ -49,4 +54,3 @@ export function searchStorage(storageRecords, itemName) {
     });
     return matches;
 }
-

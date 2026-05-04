@@ -84,7 +84,7 @@ describe('example selection fallback', () => {
             { role: 'user', content: 'viral_loop: hi deepseek, can you mine some iron ore please?' }
         ]);
 
-        assert.match(outputs(selected), /!planMiningRun\("iron", 16\)/);
+        assert.match(outputs(selected), /!mineOre\("iron", 16\)/);
         assert.doesNotMatch(outputs(selected), /!startConversation\("john_goodman"/);
     });
 
@@ -144,7 +144,7 @@ describe('example selection fallback', () => {
             { role: 'user', content: 'viral_loop: mine diamonds' }
         ]);
 
-        assert.match(outputs(selected), /!planMiningRun\("diamond", 10\)/);
+        assert.match(outputs(selected), /!mineOre\("diamond", 10\)/);
     });
 
     test('getRelevant does not mutate original example order', async () => {
@@ -184,7 +184,7 @@ describe('example selection embedding failures', () => {
             { role: 'user', content: 'viral_loop: mine some iron ore' }
         ]);
 
-        assert.match(message, /!planMiningRun\("iron", 16\)/);
+        assert.match(message, /!mineOre\("iron", 16\)/);
     });
 
     test('missing example embeddings use fallback scoring instead of NaN', async () => {

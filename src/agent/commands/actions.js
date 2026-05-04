@@ -7,7 +7,7 @@ import { objectiveResult, formatObjectiveResult } from '../objectives/objective_
 import Vec3 from 'vec3';
 import {
     fetchBridgeWaypoints,
-    normalizeBridgeWaypoint,
+    mergeJourneyMapWaypoints,
     parseJourneyMapLocation,
     postBridgeMarker,
     postBridgeWaypoint,
@@ -36,10 +36,14 @@ function runAsAction (actionFn, resume = false, timeout = -1) {
             actionLabel = actionObj.name.substring(1); // Remove the ! prefix
         }
 
+        let explicitReturn;
         const actionFnWithAgent = async () => {
-            await actionFn(agent, ...args);
+            explicitReturn = await actionFn(agent, ...args);
         };
         const code_return = await agent.actions.runAction(`action:${actionLabel}`, actionFnWithAgent, { timeout, resume });
+        if (explicitReturn !== undefined && explicitReturn !== null) {
+            return explicitReturn;
+        }
         if (code_return.interrupted && !code_return.timedout)
             return;
         return code_return.message;
@@ -131,7 +135,7 @@ async function followRouteInternal(agent, routeName, options = {}) {
             recommendedCommands: [`!startRouteRecording("${routeName}")`],
         });
     }
-    const currentDimension = agent.bot.game?.dimension || null;
+    const currentDimension = agent.bot.game?.dimension ?? null;
     if (route.dimension && currentDimension && route.dimension !== currentDimension) {
         const issue = makeRouteIssue(routeName, 0, 'dimension_mismatch', { routeDimension: route.dimension, currentDimension });
         agent.memory_bank.remember('pending', 'route_issue', issue);
@@ -304,13 +308,8 @@ export const actionsList = [
         perform: async function(agent) {
             try {
                 const rawWaypoints = await fetchBridgeWaypoints();
-                let imported = 0;
-                for (const raw of rawWaypoints) {
-                    const waypoint = normalizeBridgeWaypoint(raw);
-                    if (!waypoint) continue;
-                    agent.memory_bank.remember('journeymap.waypoints', waypoint.name, waypoint);
-                    imported++;
-                }
+                const sync = mergeJourneyMapWaypoints(agent.memory_bank, rawWaypoints);
+                const imported = sync.imported + sync.updated;
                 return okResult(`Imported ${imported} JourneyMap waypoint${imported === 1 ? '' : 's'}.`, { imported });
             } catch (err) {
                 return failResult('journeymap_bridge_unavailable', 'JourneyMap bridge is unavailable. Paste a shared JourneyMap location with !importJourneyMapLocation("[x:10, y:64, z:-20, dim:0, name:base]").', {
@@ -388,7 +387,7 @@ export const actionsList = [
                     x: marker.x,
                     y: marker.y,
                     z: marker.z,
-                    dimension: marker.dimension || agent.bot.game?.dimension || null,
+                    dimension: marker.dimension ?? agent.bot.game?.dimension ?? null,
                     source: marker.source || 'mindcraft',
                 };
                 if (marker.source === 'journeymap.waypoints') await postBridgeWaypoint(payload);
@@ -544,7 +543,13 @@ export const actionsList = [
         params: {'name': { type: 'string', description: 'The name to remember the location as.' }},
         perform: async function (agent, name) {
             const pos = agent.bot.entity.position;
-            agent.memory_bank.rememberPlace(name, pos.x, pos.y, pos.z);
+            const now = new Date().toISOString();
+            agent.memory_bank.rememberPlace(name, pos.x, pos.y, pos.z, {
+                dimension: agent.bot.game?.dimension ?? null,
+                source: 'remember_here',
+                updatedAt: now,
+                verifiedAt: now,
+            });
             return `Location saved as "${name}".`;
         }
     },
@@ -711,7 +716,7 @@ export const actionsList = [
             'num': { type: 'int', description: 'How many of the ore drops to collect.', domain: [1, Number.MAX_SAFE_INTEGER] }
         },
         perform: runAsAction(async (agent, ore_name, num) => {
-            await runMiningObjective(agent, ore_name, num);
+            return await runMiningObjective(agent, ore_name, num);
         }, false, 30) // 30 minute timeout — mining is long-running
     },
     {
@@ -737,7 +742,21 @@ export const actionsList = [
                     data,
                 }));
             }
-            agent.memory_bank.rememberPlace('home_chest', chest.x, chest.y, chest.z);
+            const dimension = agent.bot.game?.dimension ?? null;
+            const now = new Date().toISOString();
+            agent.memory_bank.rememberPlace('home_chest', chest.x, chest.y, chest.z, {
+                dimension,
+                source: 'set_home_chest',
+                updatedAt: now,
+                verifiedAt: now,
+            });
+            const block = agent.bot.blockAt(chest);
+            agent.memory_bank.remember('storage', 'home_chest', makeStorageRecord('home_chest', block || chest, [], {
+                dimension,
+                source: 'set_home_chest',
+                verifiedAt: now,
+                block: block?.name || 'chest',
+            }));
             return `Home chest saved at (${chest.x}, ${chest.y}, ${chest.z}).`;
         }
     },
@@ -755,8 +774,9 @@ export const actionsList = [
                 });
             }
             const record = makeStorageRecord(name, block, [], {
-                dimension: agent.bot.game?.dimension || null,
+                dimension: agent.bot.game?.dimension ?? null,
                 source: 'storage_label',
+                verifiedAt: new Date().toISOString(),
             });
             agent.memory_bank.remember('storage', name, record);
             return okResult(`Saved ${block.name} as storage "${name}".`, {
@@ -791,7 +811,7 @@ export const actionsList = [
                 const items = container.containerItems();
                 await container.close();
                 const indexed = makeStorageRecord(name, block, items, {
-                    dimension: agent.bot.game?.dimension || null,
+                    dimension: agent.bot.game?.dimension ?? null,
                 });
                 agent.memory_bank.remember('storage', name, indexed);
                 result = okResult(`Indexed storage "${name}".`, {
@@ -831,7 +851,11 @@ export const actionsList = [
                 for (const block of blocks) {
                     if (!block?.position) continue;
                     const key = storageKeyFromPosition(block.position);
-                    const name = `storage_${key}`;
+                    const dimension = agent.bot.game?.dimension ?? null;
+                    const existing = Object.entries(agent.memory_bank.list('storage')).find(([, record]) =>
+                        record?.key === key && (record.dimension ?? null) === dimension
+                    );
+                    const name = existing?.[0] || `storage_${key}`;
                     const close = await skills.goToPositionNonDestructive(agent.bot, block.position.x, block.position.y, block.position.z, 2);
                     if (!close) continue;
                     try {
@@ -839,7 +863,7 @@ export const actionsList = [
                         const items = container.containerItems();
                         await container.close();
                         agent.memory_bank.remember('storage', name, makeStorageRecord(name, block, items, {
-                            dimension: agent.bot.game?.dimension || null,
+                            dimension,
                         }));
                         indexed++;
                     } catch (err) {
@@ -914,7 +938,7 @@ export const actionsList = [
                 const refreshed = container.containerItems();
                 await container.close();
                 agent.memory_bank.remember('storage', best.name, makeStorageRecord(best.name, block, refreshed, {
-                    dimension: agent.bot.game?.dimension || null,
+                    dimension: agent.bot.game?.dimension ?? null,
                 }));
                 if (taken < num) {
                     result = failResult('partial_restock', `Withdrew ${taken}/${num} ${item_name}; storage did not have enough.`, {

@@ -46,10 +46,16 @@ If the incoming player message already contains a command:
 1. The command is parsed and validated.
 2. Invalid commands are rejected with a validation response.
 3. Valid commands are executed immediately with `executeCommand()`.
-4. The command output is routed back to chat.
-5. No conversation prompt is sent to the LLM for that message.
+4. The command result is normalized and rendered through `renderCommandResult()`.
+5. The rendered output is routed back to chat unless the command intentionally returned an empty result.
+6. `History.save()` runs if the command was `!newAction` or if the command dirtied `MemoryBank`.
+7. No conversation prompt is sent to the LLM for that message.
 
 This path is for explicit user commands. Natural language requests go through the prompt loop.
+
+`!newAction` is the exception to the "no context" shortcut: the user message is
+added to history before command execution so the generated code can see the
+request that caused it.
 
 ## 4. History Update
 
@@ -63,7 +69,10 @@ History turns use OpenAI-style roles:
 
 Mode behavior logs can also be inserted as a system message before the user request. This gives the model immediate context about what the bot has been doing.
 
-After each addition, history is saved to `bots/{bot_name}/memory.json`.
+`History.add()` does not persist by itself. The normal prompt path saves after
+the inbound turn and again after each response-loop iteration. The direct-command
+path saves only when a command needs persistence, such as `!newAction` or a
+structured-memory write that leaves `MemoryBank` dirty.
 
 ## 5. Prompt Preparation
 
@@ -86,10 +95,13 @@ Important placeholders include:
 - `$MEMORY`: the long-term conversation summary from `History.memory`.
 - `$CONVO`: recent conversation turns.
 - `$SELF_PROMPT`: current self-prompting state.
-- `$LAST_GOALS`: recent objective-stack goals.
-- `$BLUEPRINTS`: known blueprint/context data.
+- `$BLUEPRINTS`: known blueprint/context data, when NPC constructions exist.
 
 The examples system is intended to show the model the command style expected for the current request. Recent changes make it prefer the latest user intent rather than the whole conversation, so a new request like "can you mine iron ore" should retrieve mining examples instead of stale social examples from earlier chat.
+
+`$STATS`, `$INVENTORY`, and `$EXAMPLES` are cached across retry attempts inside
+one `promptConvo()` call. That avoids rebuilding stable prompt sections when the
+same model request is retried after a transient failure or discarded output.
 
 ## 6. LLM Request
 
@@ -129,12 +141,12 @@ If the response contains a command:
 1. The full assistant response is added to history.
 2. Command spans are extracted from the response in source order.
 3. Each command name and its arguments are parsed and validated.
-4. Invalid or hallucinated commands add a system error to history, stop the current command queue, and the loop asks the model again.
+4. Invalid or hallucinated commands add a rendered `ERR_COMMAND_MISSING` system error to history and the queue continues to any later extracted command.
 5. Valid commands are optionally announced to chat, depending on settings.
 6. `executeCommand()` runs each queued command serially.
-7. Each command output is added back to history as a system message.
-8. Empty command output, interruption, or command failure stops the current queue.
-9. The loop prompts the model again, now with the action result in context.
+7. Each command result is normalized, rendered, and added back to history as a system message.
+8. `ERR_EMPTY_RESULT`, interruption, or self-prompt/user-message interruption stops the current queue.
+9. The loop prompts the model again, now with the command result in context.
 
 That command-result re-prompt is the core reasoning loop.
 
@@ -146,7 +158,13 @@ Commands are defined in `src/agent/commands`. The dispatcher in `commands/index.
 - validates command names and argument types with `parseCommandMessage()`;
 - records `command.parsed`, `command.start`, `command.end`, and `command.failure` transcript events;
 - calls the command's `perform(agent, ...args)` function;
-- returns the command output string to the prompt loop.
+- normalizes legacy string or object returns with `normalizeCommandResult()`;
+- renders prompt-facing text with `renderCommandResult()`.
+
+Rendered command results use stable prefixes such as `OK`, `ERR_BAD_ARGS`,
+`ERR_COMMAND_MISSING`, `ERR_NO_PATH`, `ERR_INTERRUPTED`, and `ERR_PARTIAL`.
+Transcript payloads are capped for oversized results, but prompt-facing command
+text still depends on each command keeping its output compact.
 
 Commands fall broadly into two categories:
 
@@ -157,7 +175,13 @@ The command output matters because it becomes the next system turn. For example,
 
 ## 9. Reasoning And Re-Prompt Loop
 
-`handleMessage()` can run multiple model-command cycles for one incoming request. The limit is controlled by `settings.max_commands`, unless a caller provides a smaller `max_responses`.
+`handleMessage()` can run multiple model-command cycles for one incoming request.
+The response cap is resolved by `resolveMaxResponses()`:
+
+- explicit caller-provided `max_responses` wins;
+- normal user messages are capped to one response;
+- self/system prompts with an active objective can use `settings.max_commands`;
+- self/system prompts without an active objective are capped to one response.
 
 A typical multi-step flow looks like this:
 
@@ -181,7 +205,10 @@ The loop can also be interrupted or redirected by:
 
 ## 10. Modes And Autonomous Follow-Up
 
-The bot has an update loop that runs roughly every 300ms. It updates modes and the self-prompter, and checks whether active tasks are done.
+The bot has an update loop that targets roughly every 300ms. It is implemented
+as a serialized async loop, so a slow `update()` call does not overlap with the
+next tick. Each tick updates modes, updates the self-prompter, and checks whether
+active tasks are done.
 
 Modes can affect prompt context in two ways:
 
@@ -215,7 +242,8 @@ The memory summary path is failure-safe:
 - summaries run behind a queue;
 - summary calls have a timeout;
 - failures keep the previous memory instead of blocking normal operation;
-- saved memory is capped to a short text summary.
+- failed summaries requeue the removed chunk so it is not silently lost;
+- saved natural-language memory is hard-capped at 500 characters plus a truncation note.
 
 `History.save()` persists memory, recent turns, self-prompting state, task start time, last sender, and the typed `MemoryBank` state to:
 
@@ -258,6 +286,7 @@ to the model. The detailed schema and command workflows are documented in
 - model responses and failures;
 - command parse/start/end/failure events;
 - memory save/load/summary events;
+- objective push/update/pop events;
 - action and lifecycle events.
 
 Transcript entries help debug cases where the bot chose the wrong example, misread a command result, got stuck in navigation, or repeated a bad action.
@@ -271,6 +300,7 @@ This means tool output should be:
 - concise enough to fit in context;
 - specific enough for the model to act on;
 - clear about success, failure, and partial progress;
+- stable enough to support code-based recovery patterns such as `ERR_NO_PATH` or `ERR_BAD_ARGS`;
 - careful with long listings such as full chest contents;
 - explicit when the bot is genuinely stuck versus temporarily navigating, swimming, or opening a door.
 
@@ -279,8 +309,9 @@ Bad or overly long tool output can cause bad follow-up reasoning. For example, a
 ## 13. Main Files
 
 - `src/agent/agent.js`: chat handlers, prompt/action loop, response routing, lifecycle events.
-- `src/models/prompter.js`: prompt construction, placeholder replacement, model calls, memory-summary prompts.
+- `src/models/prompter.js`: prompt construction, placeholder replacement, conversation/code/planning/vision model calls, memory-summary prompts.
 - `src/agent/history.js`: recent turns, memory summary, persistence, full-history archival.
-- `src/agent/commands/index.js`: command detection, parsing, validation, execution dispatch.
+- `src/agent/commands/index.js`: command detection, parsing, validation, execution dispatch, command-result normalization/rendering.
+- `src/agent/objectives/objective_stack.js`: objective frames and transcript events for longer workflows.
 - `src/utils/examples.js`: relevant example retrieval for `$EXAMPLES`.
 - `src/utils/text.js`: text normalization and fallback relevance scoring.

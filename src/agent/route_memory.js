@@ -16,7 +16,7 @@ export function currentPositionRecord(bot) {
         x: Math.round(pos.x * 100) / 100,
         y: Math.round(pos.y * 100) / 100,
         z: Math.round(pos.z * 100) / 100,
-        dimension: bot.game?.dimension || null,
+        dimension: bot.game?.dimension ?? null,
         t: new Date().toISOString(),
     };
 }
@@ -30,14 +30,17 @@ export function shouldRecordBreadcrumb(previous, next, minDistance = 2) {
 
 export function buildRouteRecord(name, breadcrumbs, dimension = null, extra = {}) {
     const points = [...(breadcrumbs || [])];
+    const now = new Date().toISOString();
     return {
         name,
         breadcrumbs: points,
         start: points[0] || null,
         end: points[points.length - 1] || null,
         dimension,
-        createdAt: extra.createdAt || new Date().toISOString(),
-        updatedAt: new Date().toISOString(),
+        createdAt: extra.createdAt || now,
+        updatedAt: extra.updatedAt || now,
+        verifiedAt: extra.verifiedAt || null,
+        source: extra.source || 'route_recording',
         lastFailure: extra.lastFailure || null,
         linkedWaypoints: extra.linkedWaypoints || [],
     };
@@ -66,4 +69,3 @@ export function makeRouteIssue(routeName, segmentIndex, reason, data = {}) {
         createdAt: new Date().toISOString(),
     };
 }
-

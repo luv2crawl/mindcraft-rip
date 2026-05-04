@@ -12,12 +12,18 @@ import {
     _countEligibleMiningPickaxes,
     _missingMiningSupplies,
     buildMiningPlanFromInventory,
+    chooseStaircaseDirection,
+    findNearbyStaircaseStart,
     formatChestContents,
+    getClosestDesignatedBasePosition,
     getMiningHomeChestPosition,
     getNearestStoragePosition,
+    planMiningRun,
+    selectMiningEntry,
 } from '../src/agent/library/skills.js';
 import { objectiveResult, formatObjectiveResult } from '../src/agent/objectives/objective_results.js';
 import settings from '../settings.js';
+import { MemoryBank } from '../src/agent/memory_bank.js';
 
 describe('_directionToVec', () => {
     test('cardinal directions map to expected unit vectors', () => {
@@ -165,6 +171,107 @@ describe('_isStandingInBlockCell', () => {
     });
 });
 
+describe('chooseStaircaseDirection', () => {
+    test('falls back when the preferred first step has no floor', () => {
+        const bot = {
+            entity: { position: new Vec3(0, 70, 0) },
+            blockAt(pos) {
+                if (pos.x === 1 && pos.y === 68 && pos.z === 0) return { name: 'stone', position: pos };
+                return { name: 'air', position: pos };
+            },
+        };
+
+        assert.equal(chooseStaircaseDirection(bot, _directionToVec('south')).label, 'east');
+    });
+
+    test('keeps preferred direction when the first step is safe', () => {
+        const bot = {
+            entity: { position: new Vec3(0, 70, 0) },
+            blockAt(pos) {
+                if (pos.x === 0 && pos.y === 68 && pos.z === 1) return { name: 'stone', position: pos };
+                return { name: 'air', position: pos };
+            },
+        };
+
+        assert.equal(chooseStaircaseDirection(bot, _directionToVec('south')).label, 'south');
+    });
+
+    test('returns null when no adjacent staircase step is safe', () => {
+        const bot = {
+            entity: { position: new Vec3(0, 70, 0) },
+            blockAt(pos) {
+                return { name: 'air', position: pos };
+            },
+        };
+
+        assert.equal(chooseStaircaseDirection(bot, _directionToVec('south')), null);
+    });
+
+    test('finds a nearby standable start when current block is beside a shaft', () => {
+        const bot = {
+            entity: { position: new Vec3(0, 70, 0) },
+            blockAt(pos) {
+                const x = Math.floor(pos.x);
+                const y = Math.floor(pos.y);
+                const z = Math.floor(pos.z);
+                if (x === 2 && z === 0 && y === 69) return { name: 'stone', position: pos };
+                if (x === 3 && z === 0 && y === 68) return { name: 'stone', position: pos };
+                return { name: 'air', position: pos };
+            },
+        };
+
+        const start = findNearbyStaircaseStart(bot, _directionToVec('east'), 4);
+
+        assert.deepEqual({
+            x: start.x,
+            y: start.y,
+            z: start.z,
+            direction: start.direction.label,
+        }, {
+            x: 2,
+            y: 70,
+            z: 0,
+            direction: 'east',
+        });
+    });
+
+    test('selectMiningEntry avoids the chest edge and chooses a nearby start', () => {
+        const chestPos = { x: 0, y: 70, z: 0 };
+        const bot = {
+            entity: { position: new Vec3(0, 70, 1) },
+            blockAt(pos) {
+                const x = Math.floor(pos.x);
+                const y = Math.floor(pos.y);
+                const z = Math.floor(pos.z);
+                if (x === 5 && z === 1 && y === 69) return { name: 'stone', position: pos };
+                if (x === 6 && z === 1 && y === 68) return { name: 'stone', position: pos };
+                return { name: 'air', position: pos };
+            },
+        };
+
+        const entry = selectMiningEntry(bot, 'coal', chestPos, { direction: 'east' });
+
+        assert.equal(entry.ok, true);
+        assert.deepEqual(entry.entry, { x: 5, y: 70, z: 1, source: 'nearby' });
+        assert.equal(entry.direction.label, 'east');
+    });
+
+    test('selectMiningEntry reports unsafe start when no floor exists', () => {
+        const bot = {
+            entity: { position: new Vec3(0, 70, 0) },
+            blockAt(pos) {
+                return { name: 'air', position: pos };
+            },
+        };
+
+        const entry = selectMiningEntry(bot, 'coal', { x: 10, y: 70, z: 10 }, { direction: 'south' });
+
+        assert.equal(entry.ok, false);
+        assert.equal(entry.reason, 'not_standable');
+        assert.deepEqual(entry.failurePosition, { x: 0, y: 70, z: 0 });
+    });
+});
+
 describe('mining supply helpers', () => {
     test('counts only pickaxes that can mine the requested tier', () => {
         const inventory = {
@@ -185,10 +292,10 @@ describe('mining supply helpers', () => {
         );
     });
 
-    test('sufficient spare iron pickaxes only needs a crafting table when missing', () => {
+    test('sufficient spare iron pickaxes do not need a crafting table', () => {
         assert.deepEqual(
             _missingMiningSupplies({ iron_pickaxe: 3, torch: 12 }, 'iron', 3),
-            { crafting_table: 1 },
+            {},
         );
     });
 
@@ -214,6 +321,33 @@ describe('mining supply helpers', () => {
             y: 64,
             z: -4,
             source: 'memory',
+        });
+    });
+
+    test('home chest lookup accepts explicit storage and waypoint home_chest records', () => {
+        const bot = {};
+        const storageMemory = new MemoryBank();
+        storageMemory.remember('storage', 'home_chest', { name: 'home_chest', x: 8, y: 64, z: -2 });
+
+        assert.deepEqual(getMiningHomeChestPosition(bot, storageMemory), {
+            name: 'home_chest',
+            x: 8,
+            y: 64,
+            z: -2,
+            dimension: null,
+            source: 'storage:home_chest',
+        });
+
+        const waypointMemory = new MemoryBank();
+        waypointMemory.remember('journeymap.waypoints', 'home_chest', { name: 'home_chest', x: 9, y: 65, z: -3 });
+
+        assert.deepEqual(getMiningHomeChestPosition(bot, waypointMemory), {
+            name: 'home_chest',
+            x: 9,
+            y: 65,
+            z: -3,
+            dimension: null,
+            source: 'journeymap:home_chest',
         });
     });
 
@@ -266,6 +400,151 @@ describe('mining supply helpers', () => {
         });
     });
 
+    test('home chest lookup uses closest designated base when no chest is nearby', () => {
+        const bot = {
+            entity: { position: new Vec3(100, 64, 100) },
+            findBlocks() {
+                return [];
+            },
+            blockAt(pos) {
+                const x = Math.floor(pos.x);
+                const y = Math.floor(pos.y);
+                const z = Math.floor(pos.z);
+                if (x === 100 && y === 63 && z === 100) return { name: 'stone', position: pos };
+                if (x === 100 && y === 62 && z === 101) return { name: 'stone', position: pos };
+                return { name: 'air', position: pos };
+            },
+        };
+        const memory = new MemoryBank();
+        memory.rememberPlace('old_base', 0, 64, 0);
+        memory.rememberPlace('mining_base', 110, 64, 105);
+        memory.remember('storage', 'MAIN_BASE_STORAGE', { name: 'MAIN_BASE_STORAGE', x: 104, y: 64, z: 101 });
+
+        assert.deepEqual(getClosestDesignatedBasePosition(bot, memory), {
+            name: 'MAIN_BASE_STORAGE',
+            x: 104,
+            y: 64,
+            z: 101,
+            dimension: null,
+            source: 'base:storage',
+        });
+        assert.deepEqual(getMiningHomeChestPosition(bot, memory), {
+            name: 'MAIN_BASE_STORAGE',
+            x: 104,
+            y: 64,
+            z: 101,
+            dimension: null,
+            source: 'base:storage',
+        });
+    });
+
+    test('mining plan can use MAIN_BASE JourneyMap waypoint when no chest is nearby', () => {
+        const bot = {
+            entity: { position: new Vec3(100, 64, 100) },
+            inventory: {
+                slots: [
+                    { name: 'stone_pickaxe', count: 2 },
+                    { name: 'crafting_table', count: 1 },
+                    { name: 'torch', count: 32 },
+                ],
+                items() {
+                    return this.slots.filter(Boolean);
+                },
+            },
+            findBlocks() {
+                return [];
+            },
+            blockAt(pos) {
+                const x = Math.floor(pos.x);
+                const y = Math.floor(pos.y);
+                const z = Math.floor(pos.z);
+                if (x === 100 && y === 63 && z === 100) return { name: 'stone', position: pos };
+                if (x === 100 && y === 62 && z === 101) return { name: 'stone', position: pos };
+                return { name: 'air', position: pos };
+            },
+        };
+        const memory = new MemoryBank();
+        memory.remember('journeymap.waypoints', 'MAIN_BASE', {
+            name: 'MAIN_BASE',
+            x: 120,
+            y: 64,
+            z: 100,
+            dimension: 0,
+        });
+
+        const plan = planMiningRun(bot, 'iron', 16, { memoryBank: memory });
+
+        assert.equal(plan.reason, 'ready');
+        assert.equal(plan.data.chestPos.source, 'base:journeymap');
+        assert.equal(plan.data.chestPos.name, 'MAIN_BASE');
+        assert.equal(plan.data.chestPos.dimension, 0);
+        assert.match(plan.message, /designated base "MAIN_BASE"/);
+    });
+
+    test('mining plan uses designated base instead of failing when no chest is nearby', () => {
+        const bot = {
+            entity: { position: new Vec3(100, 64, 100) },
+            inventory: {
+                slots: [
+                    { name: 'stone_pickaxe', count: 2 },
+                    { name: 'crafting_table', count: 1 },
+                    { name: 'torch', count: 32 },
+                ],
+                items() {
+                    return this.slots.filter(Boolean);
+                },
+            },
+            findBlocks() {
+                return [];
+            },
+            blockAt(pos) {
+                const x = Math.floor(pos.x);
+                const y = Math.floor(pos.y);
+                const z = Math.floor(pos.z);
+                if (x === 100 && y === 63 && z === 100) return { name: 'stone', position: pos };
+                if (x === 100 && y === 62 && z === 101) return { name: 'stone', position: pos };
+                return { name: 'air', position: pos };
+            },
+        };
+        const memory = new MemoryBank();
+        memory.rememberPlace('base', 120, 64, 100);
+
+        const plan = planMiningRun(bot, 'iron', 16, { memoryBank: memory });
+
+        assert.equal(plan.reason, 'ready');
+        assert.equal(plan.data.chestPos.source, 'base:places');
+        assert.match(plan.message, /designated base "base"/);
+    });
+
+    test('mining plan reports unsafe start when descent cannot begin', () => {
+        const bot = {
+            entity: { position: new Vec3(100, 70, 100) },
+            inventory: {
+                slots: [
+                    { name: 'wooden_pickaxe', count: 2 },
+                ],
+                items() {
+                    return this.slots.filter(Boolean);
+                },
+            },
+            findBlocks() {
+                return [];
+            },
+            blockAt(pos) {
+                return { name: 'air', position: pos };
+            },
+        };
+        const memory = new MemoryBank();
+        memory.rememberPlace('base', 120, 70, 100);
+
+        const plan = planMiningRun(bot, 'coal', 32, { memoryBank: memory });
+
+        assert.equal(plan.ok, false);
+        assert.equal(plan.reason, 'unsafe_mining_start');
+        assert.equal(plan.missing.safe_mining_start, 1);
+        assert.equal(plan.data.failure, 'not_standable');
+    });
+
     test('diamond mining plan reports missing supplies before travel', () => {
         const plan = buildMiningPlanFromInventory('diamond', 10, {
             stone_pickaxe: 3,
@@ -279,10 +558,9 @@ describe('mining supply helpers', () => {
         assert.match(plan.recommendedCommands.join('\n'), /takeFromChest\("iron_pickaxe", 3\)/);
     });
 
-    test('mining plan succeeds with sufficient spare tools and table', () => {
+    test('mining plan succeeds with sufficient spare tools without a crafting table', () => {
         const plan = buildMiningPlanFromInventory('iron', 32, {
             stone_pickaxe: 2,
-            crafting_table: 1,
             torch: 32,
         }, { currentY: 64 });
 
@@ -300,6 +578,19 @@ describe('mining supply helpers', () => {
         assert.equal(plan.reason, 'missing_supplies');
         assert.equal(plan.need.torch, 32);
         assert.equal(plan.missing.torch, 32);
+    });
+
+    test('coal mining near higher coal levels does not require torch supplies', () => {
+        const plan = buildMiningPlanFromInventory('coal', 32, {
+            wooden_pickaxe: 2,
+        }, { currentY: 70 });
+
+        assert.equal(plan.ok, true);
+        assert.equal(plan.reason, 'ready');
+        assert.equal(plan.need.crafting_table, undefined);
+        assert.equal(plan.missing.crafting_table, undefined);
+        assert.equal(plan.need.torch, undefined);
+        assert.equal(plan.missing.torch, undefined);
     });
 
     test('mining plan treats craftable pickaxes as ready supplies', () => {
