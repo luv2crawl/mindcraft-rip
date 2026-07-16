@@ -25,9 +25,39 @@ export class MemoryBank {
 		return JSON.parse(JSON.stringify(value));
 	}
 
+	_isSafeKey(key) {
+		return !['__proto__', 'prototype', 'constructor'].includes(String(key));
+	}
+
+	_assertSafeKey(key, label = 'memory key') {
+		if (!this._isSafeKey(key)) {
+			throw new Error(`Unsafe ${label}: ${key}`);
+		}
+	}
+
+	_sanitizeLoadedValue(value) {
+		if (Array.isArray(value)) {
+			return value.map(item => this._sanitizeLoadedValue(item));
+		}
+		if (!this._isPlainObject(value)) {
+			return value;
+		}
+		const clean = {};
+		for (const [key, child] of Object.entries(value)) {
+			if (this._isSafeKey(key)) {
+				clean[key] = this._sanitizeLoadedValue(child);
+			}
+		}
+		return clean;
+	}
+
 	_normalizeType(type) {
 		if (type === 'journeymap.waypoints') return ['journeymap', 'waypoints'];
-		return String(type || '').split('.').filter(Boolean);
+		const parts = String(type || '').split('.').filter(Boolean);
+		for (const part of parts) {
+			this._assertSafeKey(part, 'memory namespace');
+		}
+		return parts;
 	}
 
 	_getNamespace(type, create = false) {
@@ -86,13 +116,15 @@ export class MemoryBank {
 	}
 
 	remember(type, key, value) {
+		this._assertSafeKey(key);
 		const namespace = this._getNamespace(type, true);
-		namespace[key] = this._clone(value);
+		namespace[key] = this._sanitizeLoadedValue(this._clone(value));
 		this.dirty = true;
 		return namespace[key];
 	}
 
 	recall(type, key) {
+		if (!this._isSafeKey(key)) return undefined;
 		const namespace = this._getNamespace(type, false);
 		if (!namespace) return undefined;
 		const value = namespace[key];
@@ -272,8 +304,8 @@ export class MemoryBank {
 
 		if (!hasTypedNamespaces) {
 			for (const [name, value] of Object.entries(json)) {
-				if (this._looksLikePlaceValue(value)) {
-					next.places[name] = this._migratePlaceValue(name, value);
+				if (this._isSafeKey(name) && this._looksLikePlaceValue(value)) {
+					next.places[name] = this._sanitizeLoadedValue(this._migratePlaceValue(name, value));
 				}
 			}
 			this.memory = next;
@@ -282,8 +314,8 @@ export class MemoryBank {
 		}
 
 		for (const [key, value] of Object.entries(json)) {
-			if (this._isPlainObject(value)) {
-				next[key] = this._clone(value);
+			if (this._isSafeKey(key) && this._isPlainObject(value)) {
+				next[key] = this._sanitizeLoadedValue(this._clone(value));
 			}
 		}
 		for (const [key, defaultValue] of Object.entries(this._emptyMemory())) {
@@ -295,7 +327,11 @@ export class MemoryBank {
 		if (!this._isPlainObject(next.journeymap.waypoints)) next.journeymap.waypoints = {};
 		if (this._isPlainObject(next.places)) {
 			for (const [name, value] of Object.entries(next.places)) {
-				next.places[name] = this._migratePlaceValue(name, value);
+				if (this._isSafeKey(name)) {
+					next.places[name] = this._migratePlaceValue(name, value);
+				} else {
+					delete next.places[name];
+				}
 			}
 		}
 		if (this._isPlainObject(next.storage)) {

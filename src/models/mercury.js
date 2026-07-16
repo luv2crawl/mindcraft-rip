@@ -1,6 +1,7 @@
 import OpenAIApi from 'openai';
 import { getKey, hasKey } from '../utils/keys.js';
 import { strictFormat } from '../utils/text.js';
+import { notifyContextTruncateRetry, notifyModelResponseFallback, notifyModelRetryVisionFallback } from './_model_transcript_helpers.js';
 
 export class Mercury {
     static prefix = 'mercury';
@@ -48,12 +49,15 @@ export class Mercury {
         catch (err) {
             if ((err.message == 'Context length exceeded' || err.code == 'context_length_exceeded') && turns.length > 1) {
                 console.log('Context length exceeded, trying again with shorter context.');
+                notifyContextTruncateRetry(this, turns.length - 1);
                 return await this.sendRequest(turns.slice(1), systemMessage, stop_seq);
             } else if (err.message.includes('image_url')) {
                 console.log(err);
+                notifyModelRetryVisionFallback(this);
                 res = 'Vision is only supported by certain models.';
             } else {
                 console.log(err);
+                notifyModelResponseFallback(this, err);
                 res = 'My brain disconnected, try again.';
             }
         }

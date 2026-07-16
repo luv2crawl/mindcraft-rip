@@ -3,6 +3,13 @@ import assert from 'node:assert/strict';
 import { Agent, resolveMaxResponses } from '../src/agent/agent.js';
 import { setSettings } from '../src/agent/settings.js';
 import { MemoryBank } from '../src/agent/memory_bank.js';
+import {
+    createSessionMemory,
+    formatSessionMemory,
+    noteCommandResult,
+    noteCommandStart,
+    noteUserIntent,
+} from '../src/agent/session_memory.js';
 
 async function withQuietConsole(fn) {
     const originalLog = console.log;
@@ -25,6 +32,7 @@ function makeAgent(response) {
     });
     const historyEntries = [];
     const routed = [];
+    const promptSaveCounts = [];
     let saveCount = 0;
     const agent = Object.create(Agent.prototype);
     Object.assign(agent, {
@@ -63,7 +71,11 @@ function makeAgent(response) {
             }
         },
         prompter: {
-            async promptConvo() {
+            async promptConvo(history) {
+                promptSaveCounts.push(saveCount);
+                if (typeof response === 'function') {
+                    return await response(history);
+                }
                 return response;
             }
         },
@@ -71,7 +83,7 @@ function makeAgent(response) {
             routed.push(message);
         }
     });
-    return { agent, historyEntries, routed, getSaveCount: () => saveCount };
+    return { agent, historyEntries, routed, promptSaveCounts, getSaveCount: () => saveCount };
 }
 
 describe('Agent.handleMessage command responses', () => {
@@ -134,6 +146,42 @@ describe('Agent.handleMessage command responses', () => {
         assert.equal(waypoint.source, 'journeymap_import');
     });
 
+    test('awaits history save before prompting', async () => {
+        const { agent, promptSaveCounts } = makeAgent('plain response');
+
+        await withQuietConsole(() => agent.handleMessage('system', 'hello', 1));
+
+        assert.deepEqual(promptSaveCounts, [1]);
+    });
+
+    test('serializes overlapping handleMessage calls', async () => {
+        const seenPrompts = [];
+        let releaseFirst;
+        const firstPromptStarted = new Promise(resolve => {
+            releaseFirst = resolve;
+        });
+        let promptCount = 0;
+        const { agent } = makeAgent(async (history) => {
+            promptCount += 1;
+            seenPrompts.push(history.map(entry => entry.content).join('|'));
+            if (promptCount === 1) {
+                await firstPromptStarted;
+            }
+            return `response ${promptCount}`;
+        });
+
+        const first = withQuietConsole(() => agent.handleMessage('system', 'first', 1));
+        const second = withQuietConsole(() => agent.handleMessage('system', 'second', 1));
+        await new Promise(resolve => setTimeout(resolve, 10));
+        assert.equal(promptCount, 1);
+        releaseFirst();
+        await Promise.all([first, second]);
+
+        assert.equal(promptCount, 2);
+        assert.match(seenPrompts[0], /first/);
+        assert.match(seenPrompts[1], /second/);
+    });
+
     test('updates runtime session memory after command success and failure', async () => {
         const { agent } = makeAgent('');
 
@@ -167,6 +215,20 @@ describe('Agent.handleMessage command responses', () => {
 
         assert.equal(agent.session_memory.currentResourceTarget, 'iron_ingot');
         assert.equal(agent.memory_bank.getJson().session_memory, undefined);
+    });
+
+    test('keeps remaining mining target after one resource is completed', () => {
+        const agent = { session_memory: createSessionMemory() };
+
+        noteUserIntent(agent, 'go mine some copper and coal');
+        noteCommandStart(agent, '!mineOre', { resourceTarget: 'copper' });
+        noteCommandResult(agent, '!mineOre', { ok: true, code: 'OK', data: {} }, { resourceTarget: 'copper' });
+
+        const summary = formatSessionMemory(agent.session_memory);
+
+        assert.match(summary, /target=copper/);
+        assert.match(summary, /pending=mine:coal/);
+        assert.doesNotMatch(summary, /pending=mine:copper/);
     });
 });
 

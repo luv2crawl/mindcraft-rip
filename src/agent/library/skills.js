@@ -2,7 +2,7 @@ import * as mc from "../../utils/mcdata.js";
 import * as world from "./world.js";
 import pf from 'mineflayer-pathfinder';
 import Vec3 from 'vec3';
-import settings from "../../../settings.js";
+import settings from "../settings.js";
 import {
     getOreInfo,
     getOreBlockNames,
@@ -12,8 +12,16 @@ import {
 } from './ore_data.js';
 import { objectiveResult, formatObjectiveResult } from '../objectives/objective_results.js';
 
-const blockPlaceDelay = settings.block_place_delay == null ? 0 : settings.block_place_delay;
-const useDelay = blockPlaceDelay > 0;
+function getBlockPlaceDelay() {
+    return settings.block_place_delay == null ? 0 : settings.block_place_delay;
+}
+
+async function waitForBlockPlaceDelay() {
+    const blockPlaceDelay = getBlockPlaceDelay();
+    if (blockPlaceDelay > 0) {
+        await new Promise(resolve => setTimeout(resolve, blockPlaceDelay));
+    }
+}
 
 export function log(bot, message) {
     bot.output += message + '\n';
@@ -85,6 +93,20 @@ function _positionRecordFromMemory(key, record, source) {
 function _getNamedMemoryPosition(memoryBank, type, key, source) {
     if (!memoryBank?.recall) return null;
     return _positionRecordFromMemory(key, memoryBank.recall(type, key), source);
+}
+
+function _getNamedMemoryPositionCaseInsensitive(memoryBank, type, key, source) {
+    const exact = _getNamedMemoryPosition(memoryBank, type, key, source);
+    if (exact) return exact;
+    if (!memoryBank?.list) return null;
+    const wanted = String(key || '').toLowerCase();
+    const records = memoryBank.list(type) || {};
+    for (const [recordKey, record] of Object.entries(records)) {
+        if (String(recordKey).toLowerCase() === wanted || String(record?.name || '').toLowerCase() === wanted) {
+            return _positionRecordFromMemory(recordKey, record, source);
+        }
+    }
+    return null;
 }
 
 function _isDesignatedBaseName(name) {
@@ -783,7 +805,7 @@ export async function breakBlockAt(bot, x, y, z) {
     let block = bot.blockAt(Vec3(x, y, z));
     if (block.name !== 'air' && block.name !== 'cave_air' && block.name !== 'void_air' && block.name !== 'water' && block.name !== 'lava') {
         if (bot.modes.isOn('cheat')) {
-            if (useDelay) { await new Promise(resolve => setTimeout(resolve, blockPlaceDelay)); }
+            await waitForBlockPlaceDelay();
             let msg = '/setblock ' + Math.floor(x) + ' ' + Math.floor(y) + ' ' + Math.floor(z) + ' air';
             bot.chat(msg);
             log(bot, `Used /setblock to break block at ${x}, ${y}, ${z}.`);
@@ -875,14 +897,14 @@ export async function placeBlock(bot, blockType, x, y, z, placeOn='bottom', dont
         if (blockType.includes('stairs')) {
             blockType += `[facing=${face}]`;
         }
-        if (useDelay) { await new Promise(resolve => setTimeout(resolve, blockPlaceDelay)); }
+        await waitForBlockPlaceDelay();
         let msg = '/setblock ' + Math.floor(x) + ' ' + Math.floor(y) + ' ' + Math.floor(z) + ' ' + blockType;
         bot.chat(msg);
         if (blockType.includes('door'))
-            if (useDelay) { await new Promise(resolve => setTimeout(resolve, blockPlaceDelay)); }
+            await waitForBlockPlaceDelay();
             bot.chat('/setblock ' + Math.floor(x) + ' ' + Math.floor(y+1) + ' ' + Math.floor(z) + ' ' + blockType + '[half=upper]');
         if (blockType.includes('bed'))
-            if (useDelay) { await new Promise(resolve => setTimeout(resolve, blockPlaceDelay)); }
+            await waitForBlockPlaceDelay();
             bot.chat('/setblock ' + Math.floor(x) + ' ' + Math.floor(y) + ' ' + Math.floor(z-1) + ' ' + blockType + '[part=head]');
         log(bot, `Used /setblock to place ${blockType} at ${target_dest}.`);
         return true;
@@ -1476,6 +1498,17 @@ export async function goToGoal(bot, goal, options = {}) {
     const doorCheckInterval = startDoorInterval(bot);
 
     bot.pathfinder.setMovements(final_movements);
+    const agent = bot.mindcraft_agent;
+    const goalMode = goal?.constructor?.name ?? null;
+    const target_pos =
+        typeof goal?.x === 'number' ? { x: goal.x, y: goal.y, z: goal.z } : null;
+    const dist_initial = _goalApproxDistance(bot, goal);
+    agent?.transcript?.record('pathfinder.start', {
+        target_pos,
+        mode: goalMode,
+        dist_initial,
+    }, 'skills', { stage: 'pathfinder' });
+
     try {
         await bot.pathfinder.goto(goal);
         clearInterval(doorCheckInterval);
@@ -2642,6 +2675,12 @@ const ORE_DROPS = {
     ancient_debris: ['ancient_debris'],
 };
 
+export function getMiningDropNames(oreName) {
+    const oreInfo = getOreInfo(oreName);
+    if (!oreInfo) return [];
+    return (ORE_DROPS[oreInfo.key] || []).slice();
+}
+
 const MINING_PICKAXE_RANK = {
     wooden_pickaxe: 1,
     golden_pickaxe: 1,
@@ -3028,8 +3067,8 @@ export function getMiningHomeChestPosition(bot, memoryBank = null) {
         const recalled = memoryBank.recallPlace('home_chest');
         if (recalled) return { x: recalled[0], y: recalled[1], z: recalled[2], source: 'memory' };
         const explicitHomeChest =
-            _getNamedMemoryPosition(memoryBank, 'storage', 'home_chest', 'storage:home_chest')
-            || _getNamedMemoryPosition(memoryBank, 'journeymap.waypoints', 'home_chest', 'journeymap:home_chest');
+            _getNamedMemoryPositionCaseInsensitive(memoryBank, 'storage', 'home_chest', 'storage:home_chest')
+            || _getNamedMemoryPositionCaseInsensitive(memoryBank, 'journeymap.waypoints', 'home_chest', 'journeymap:home_chest');
         if (explicitHomeChest) return explicitHomeChest;
     }
     const nearby = rememberLastStorageBlock(bot, world.getNearestStorageBlock(bot, 32));
@@ -3137,7 +3176,7 @@ export async function prepareMiningSupplies(bot, oreName, chestPos) {
         log(bot, formatObjectiveResult(plan));
         return false;
     }
-    if (eligiblePickaxes < desiredPickaxes && (inventory.crafting_table || 0) < 1) {
+    if (need.torch && (inventory.torch || 0) < need.torch) {
         const plan = buildMiningPlanFromInventory(oreName, 1, inventory, { currentY: bot.entity.position.y });
         log(bot, formatObjectiveResult(plan));
         return false;
@@ -3672,7 +3711,7 @@ export async function digStaircaseTo(bot, targetY, dirVec, oreNamesToScan = null
     } };
 }
 
-export async function returnToChestAndDeposit(bot, chestPos, oreName, miningEntry) {
+export async function returnToChestAndDeposit(bot, chestPos, oreName, miningEntry, options = {}) {
     /**
      * Travel to the home chest, deposit the target ore drops + spoil blocks, then return
      * to the mining entry point so the caller can resume the corridor.
@@ -3681,19 +3720,28 @@ export async function returnToChestAndDeposit(bot, chestPos, oreName, miningEntr
     const ok = await goToPositionChunked(bot, chestPos.x, chestPos.y, chestPos.z, 2);
     if (!ok) {
         log(bot, `Could not reach home chest at (${chestPos.x}, ${chestPos.y}, ${chestPos.z}).`);
-        return false;
+        return options.detailed ? { ok: false, depositedCounts: {}, returnedToEntry: false } : false;
     }
     const oreInfo = getOreInfo(oreName);
     const dropList = ((oreInfo && ORE_DROPS[oreInfo.key]) || []).concat(SPOIL_BLOCKS);
+    const depositedCounts = {};
+    const countItem = (name) => (bot.inventory.items() || [])
+        .filter(item => item.name === name)
+        .reduce((sum, item) => sum + item.count, 0);
     for (const itemName of dropList) {
         if (bot.interrupt_code) break;
         if (bot.inventory.findInventoryItem(itemName)) {
+            const before = countItem(itemName);
             await putInChest(bot, itemName, -1);
+            const after = countItem(itemName);
+            const deposited = Math.max(0, before - after);
+            if (deposited > 0) depositedCounts[itemName] = (depositedCounts[itemName] || 0) + deposited;
         }
     }
-    if (bot.interrupt_code) return false;
+    if (bot.interrupt_code) return options.detailed ? { ok: false, depositedCounts, returnedToEntry: false } : false;
     log(bot, `Deposit done; returning to mining entry.`);
-    return await goToPositionChunked(bot, miningEntry.x, miningEntry.y, miningEntry.z, 2);
+    const returnedToEntry = await goToPositionChunked(bot, miningEntry.x, miningEntry.y, miningEntry.z, 2);
+    return options.detailed ? { ok: returnedToEntry, depositedCounts, returnedToEntry } : returnedToEntry;
 }
 
 export async function mineOreAt(bot, oreName, num, options = {}) {
@@ -3852,6 +3900,7 @@ export async function mineOreAt(bot, oreName, num, options = {}) {
     // each iteration; positive deltas (mined more) are added, negative deltas (deposit)
     // are ignored.
     let cumulativeMined = 0;
+    const depositedCounts = {};
     let lastOnHand = countOreOnHand();
 
     const TORCH_INTERVAL = 6;
@@ -3873,8 +3922,11 @@ export async function mineOreAt(bot, oreName, num, options = {}) {
         if (bot.inventory.emptySlotCount() <= 2) {
             log(bot, `mineOre: inventory near full at step ${steps}, depositing.`);
             if (objectiveUpdate) objectiveUpdate('DEPOSIT');
-            const ok = await returnToChestAndDeposit(bot, chestPos, oreName, miningEntry);
-            if (!ok) {
+            const deposit = await returnToChestAndDeposit(bot, chestPos, oreName, miningEntry, { detailed: true });
+            for (const [itemName, count] of Object.entries(deposit.depositedCounts || {})) {
+                depositedCounts[itemName] = (depositedCounts[itemName] || 0) + count;
+            }
+            if (!deposit.ok) {
                 exitReason = `deposit cycle failed`;
                 log(bot, `mineOre: deposit cycle failed; stopping.`);
                 return {
@@ -3882,7 +3934,7 @@ export async function mineOreAt(bot, oreName, num, options = {}) {
                     reason: 'deposit_failed',
                     mined: cumulativeMined,
                     target: num,
-                    data: { exitReason },
+                    data: { exitReason, depositedCounts },
                 };
             }
             if (objectiveUpdate) objectiveUpdate('RESUME');
@@ -3913,7 +3965,11 @@ export async function mineOreAt(bot, oreName, num, options = {}) {
 
     if (!bot.interrupt_code) {
         if (objectiveUpdate) objectiveUpdate('DEPOSIT');
-        await returnToChestAndDeposit(bot, chestPos, oreName, miningEntry);
+        const deposit = await returnToChestAndDeposit(bot, chestPos, oreName, miningEntry, { detailed: true });
+        for (const [itemName, count] of Object.entries(deposit.depositedCounts || {})) {
+            depositedCounts[itemName] = (depositedCounts[itemName] || 0) + count;
+        }
+        if (!deposit.ok && !exitReason) exitReason = 'final deposit failed';
     }
     log(bot, `mineOre: run complete. Reason: ${exitReason}. Cumulative mined: ${cumulativeMined} ${oreInfo.display}; on hand: ${countOreOnHand()}.`);
     return {
@@ -3921,6 +3977,6 @@ export async function mineOreAt(bot, oreName, num, options = {}) {
         reason: cumulativeMined >= num ? 'target_reached' : 'partial',
         mined: cumulativeMined,
         target: num,
-        data: { exitReason, steps },
+        data: { exitReason, steps, depositedCounts, onHand: countOreOnHand() },
     };
 }

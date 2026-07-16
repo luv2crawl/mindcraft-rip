@@ -114,7 +114,11 @@ export class Gemini {
             contents: text,
         })
 
-        return result.embeddings;
+        const embedding = result?.embeddings?.[0]?.values || result?.embedding?.values || result?.embeddings?.[0];
+        if (!Array.isArray(embedding)) {
+            throw new Error('Gemini embedding response did not include a numeric vector.');
+        }
+        return embedding;
     }
 }
 

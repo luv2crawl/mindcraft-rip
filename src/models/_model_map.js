@@ -19,6 +19,9 @@ const apiMap = await (async () => {
                 if (typeof exported === 'function' && Object.prototype.hasOwnProperty.call(exported, 'prefix')) {
                     const prefix = exported.prefix;
                     if (typeof prefix === 'string' && prefix.length > 0) {
+                        if (map[prefix]) {
+                            throw new Error(`Duplicate model provider prefix '${prefix}' in ${file}`);
+                        }
                         map[prefix] = exported;
                     }
                 }

@@ -400,10 +400,36 @@ const modes_list = [
     }
 ];
 
+function cloneModeValue(value) {
+    if (value instanceof Map) return new Map(value);
+    if (Array.isArray(value)) return value.slice();
+    if (value && typeof value === 'object') return { ...value };
+    return value;
+}
+
+function createModeInstance(mode) {
+    const instance = {};
+    for (const [key, value] of Object.entries(mode)) {
+        instance[key] = cloneModeValue(value);
+    }
+    instance.active = false;
+    instance.paused = false;
+    return instance;
+}
+
 async function execute(mode, agent, func, timeout=-1) {
     if (agent.self_prompter.isActive())
         agent.self_prompter.stopLoop();
     let interrupted_action = agent.actions.currentActionLabel;
+    agent.transcript?.record('mode.trigger', {
+        mode_name: mode.name,
+        reason: interrupted_action ? `interrupt_${interrupted_action}` : 'condition_met',
+        condition_values: {
+            idle: agent.isIdle(),
+            current_action_label: agent.actions.currentActionLabel || null,
+            has_path_goal: !!agent.bot?.pathfinder?.goal,
+        },
+    }, 'modes', { stage: 'mode' });
     mode.active = true;
     let code_return;
     try {
@@ -426,46 +452,61 @@ async function execute(mode, agent, func, timeout=-1) {
         // auto prompt to respond to the interruption
         let role = convoManager.inConversation() ? agent.last_sender : 'system';
         let logs = agent.bot.modes.flushBehaviorLog();
-        agent.handleMessage(role, `(AUTO MESSAGE)Your previous action '${interrupted_action}' was interrupted by ${mode.name}.
+        if (typeof agent._queueHandleMessage === 'function') {
+            agent._queueHandleMessage(role, `(AUTO MESSAGE)Your previous action '${interrupted_action}' was interrupted by ${mode.name}.
         Your behavior log: ${logs}\nRespond accordingly.`);
+        } else {
+            void agent.handleMessage(role, `(AUTO MESSAGE)Your previous action '${interrupted_action}' was interrupted by ${mode.name}.
+        Your behavior log: ${logs}\nRespond accordingly.`).catch(error => {
+                console.error('Mode auto-prompt failed:', error?.message || error);
+            });
+        }
     }
-}
-
-let _agent = null;
-const modes_map = {};
-for (let mode of modes_list) {
-    modes_map[mode.name] = mode;
 }
 
 class ModeController {
     /*
     SECURITY WARNING:
-    ModesController must be reference isolated. Do not store references to external objects like `agent`.
-    This object is accessible by LLM generated code, so any stored references are also accessible.
-    This can be used to expose sensitive information by malicious prompters.
+    ModeController is accessible by LLM generated code. The agent reference is a
+    private class field so generated code can use the public mode API without
+    reading the agent object through bot.modes.
     */
-    constructor() {
+    #agent;
+    #modes_list;
+    #modes_map;
+
+    constructor(agent) {
+        this.#agent = agent;
+        this.#modes_list = modes_list.map(createModeInstance);
+        this.#modes_map = {};
+        for (let mode of this.#modes_list) {
+            this.#modes_map[mode.name] = mode;
+        }
         this.behavior_log = '';
     }
 
     exists(mode_name) {
-        return modes_map[mode_name] != null;
+        return this.#modes_map[mode_name] != null;
     }
 
     setOn(mode_name, on) {
-        modes_map[mode_name].on = on;
+        this.#modes_map[mode_name].on = on;
     }
 
     isOn(mode_name) {
-        return modes_map[mode_name].on;
+        return this.#modes_map[mode_name].on;
+    }
+
+    isPaused(mode_name) {
+        return this.#modes_map[mode_name]?.paused === true;
     }
 
     pause(mode_name) {
-        modes_map[mode_name].paused = true;
+        this.#modes_map[mode_name].paused = true;
     }
 
     unpause(mode_name) {
-        const mode = modes_map[mode_name];
+        const mode = this.#modes_map[mode_name];
         //if  unpause func is defined and mode is currently paused
         if (mode.unpause && mode.paused) {
             mode.unpause();
@@ -474,7 +515,7 @@ class ModeController {
     }
 
     unPauseAll() {
-        for (let mode of modes_list) {
+        for (let mode of this.#modes_list) {
             if (mode.paused) console.log(`Unpausing mode ${mode.name}`);
             this.unpause(mode.name);
         }
@@ -482,7 +523,7 @@ class ModeController {
 
     getMiniDocs() { // no descriptions
         let res = 'Agent Modes:';
-        for (let mode of modes_list) {
+        for (let mode of this.#modes_list) {
             let on = mode.on ? 'ON' : 'OFF';
             res += `\n- ${mode.name}(${on})`;
         }
@@ -491,7 +532,7 @@ class ModeController {
 
     getDocs() {
         let res = 'Agent Modes:';
-        for (let mode of modes_list) {
+        for (let mode of this.#modes_list) {
             let on = mode.on ? 'ON' : 'OFF';
             res += `\n- ${mode.name}(${on}): ${mode.description}`;
         }
@@ -499,13 +540,14 @@ class ModeController {
     }
 
     async update() {
-        if (_agent.isIdle()) {
+        const agent = this.#agent;
+        if (agent.isIdle()) {
             this.unPauseAll();
         }
-        for (let mode of modes_list) {
-            let interruptible = mode.interrupts.some(i => i === 'all') || mode.interrupts.some(i => i === _agent.actions.currentActionLabel);
-            if (mode.on && !mode.paused && !mode.active && (_agent.isIdle() || interruptible)) {
-                await mode.update(_agent);
+        for (let mode of this.#modes_list) {
+            let interruptible = mode.interrupts.some(i => i === 'all') || mode.interrupts.some(i => i === agent.actions.currentActionLabel);
+            if (mode.on && !mode.paused && !mode.active && (agent.isIdle() || interruptible)) {
+                await mode.update(agent);
             }
             if (mode.active) break;
         }
@@ -519,14 +561,14 @@ class ModeController {
 
     getJson() {
         let res = {};
-        for (let mode of modes_list) {
+        for (let mode of this.#modes_list) {
             res[mode.name] = mode.on;
         }
         return res;
     }
 
     loadJson(json) {
-        for (let mode of modes_list) {
+        for (let mode of this.#modes_list) {
             if (json[mode.name] != undefined) {
                 mode.on = json[mode.name];
             }
@@ -535,9 +577,8 @@ class ModeController {
 }
 
 export function initModes(agent) {
-    _agent = agent;
     // the mode controller is added to the bot object so it is accessible from anywhere the bot is used
-    agent.bot.modes = new ModeController();
+    agent.bot.modes = new ModeController(agent);
     if (agent.task) {
         agent.bot.restrict_to_inventory = agent.task.restrict_to_inventory;
     }

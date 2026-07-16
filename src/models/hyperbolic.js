@@ -1,4 +1,5 @@
 import { getKey } from '../utils/keys.js';
+import { notifyContextTruncateRetry, notifyModelResponseFallback } from './_model_transcript_helpers.js';
 
 export class Hyperbolic {
     static prefix = 'hyperbolic';
@@ -73,9 +74,11 @@ export class Hyperbolic {
                     turns.length > 1
                 ) {
                     console.log('Context length exceeded, trying again with a shorter context...');
+                    notifyContextTruncateRetry(this, turns.length - 1);
                     return await this.sendRequest(turns.slice(1), systemMessage, stopSeq);
                 } else {
                     console.error(err);
+                    notifyModelResponseFallback(this, err);
                     completionContent = 'My brain disconnected, try again.';
                 }
             }

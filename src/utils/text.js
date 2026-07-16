@@ -87,6 +87,7 @@ export function strictFormat(turns) {
     let messages = [];
     let filler = {role: 'user', content: '_'};
     for (let msg of turns) {
+        msg = { ...msg };
         if (typeof msg.content === 'string')  {
             msg.content = msg.content.trim();
         }

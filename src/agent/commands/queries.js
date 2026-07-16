@@ -7,6 +7,7 @@ import { load } from 'cheerio';
 import { formatMiningPlan, planMiningRun } from '../objectives/mining_objective.js';
 import { objectiveResult, formatObjectiveResult } from '../objectives/objective_results.js';
 import { getWorldMemoryPath } from '../world_memory.js';
+import { formatTaskLedgerSummary } from '../task_ledger.js';
 
 const pad = (str) => {
     return '\n' + str + '\n';
@@ -129,7 +130,7 @@ export const queryList = [
         perform: function (agent) {
             let bot = agent.bot;
             let res = 'NEARBY_BLOCKS';
-            let blocks = world.getNearestBlocks(bot);
+            let blocks = world.getNearestBlocks(bot, null, 8, 256);
             let block_details = new Set();
             
             for (let block of blocks) {
@@ -247,6 +248,37 @@ export const queryList = [
         description: 'Show the current objective stack and active high-level workflow state.',
         perform: function (agent) {
             return agent.objectives.getSummary();
+        }
+    },
+    {
+        name: '!taskStatus',
+        description: 'Show the current user task, progress, blocker, next action, and verified evidence.',
+        perform: function(agent) {
+            const current = agent.task_ledger?.current || null;
+            if (!current) {
+                return formatObjectiveResult(objectiveResult({
+                    ok: true,
+                    reason: 'idle',
+                    message: 'No current task is active.',
+                }));
+            }
+            return formatObjectiveResult(objectiveResult({
+                ok: !['failed', 'blocked', 'interrupted'].includes(current.status),
+                reason: current.status || 'task',
+                message: [
+                    formatTaskLedgerSummary({ current }),
+                    current.blockedReason ? `Blocked: ${current.blockedReason}` : null,
+                    current.nextAction ? `Next: ${current.nextAction}` : null,
+                ].filter(Boolean).join('\n'),
+                data: {
+                    id: current.id,
+                    kind: current.kind,
+                    target: current.target,
+                    phase: current.phase,
+                    verified: current.progress?.verified,
+                    targetCount: current.progress?.target ?? current.targetCount,
+                },
+            }));
         }
     },
     {

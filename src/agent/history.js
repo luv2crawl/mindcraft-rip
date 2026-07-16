@@ -12,7 +12,9 @@ export class History {
         this.memory_fp = `./bots/${this.name}/memory.json`;
         this.full_history_fp = undefined;
 
-        mkdirSync(`./bots/${this.name}/histories`, { recursive: true });
+        if (settings.legacy_logs_enabled) {
+            mkdirSync(`./bots/${this.name}/histories`, { recursive: true });
+        }
 
         this.turns = [];
 
@@ -40,12 +42,12 @@ export class History {
         this.agent.transcript?.record('memory.summary.start', {
             turn_count: turns?.length ?? 0,
             filtered_turn_count: memoryTurns.length
-        }, 'history');
+        }, 'history', { stage: 'memory' });
         if (memoryTurns.length === 0) {
             this.agent.transcript?.record('memory.summary.skipped', {
                 reason: 'no_durable_turns',
                 turn_count: turns?.length ?? 0
-            }, 'history');
+            }, 'history', { stage: 'memory' });
             return true;
         }
         const timeoutMs = settings.memory_summary_timeout_ms ?? 20000;
@@ -60,19 +62,19 @@ export class History {
             this.agent.transcript?.record('memory.summary.failure', {
                 error: error?.message || String(error),
                 timeout_ms: timeoutMs
-            }, 'history');
+            }, 'history', { stage: 'memory' });
             return false;
         }
 
         if (this.memory.length > 500) {
-            this.memory = this.memory.slice(0, 500);
-            this.memory += '...(Memory truncated to 500 chars. Compress it more next time)';
+            const suffix = '...(Memory truncated to 500 chars. Compress it more next time)';
+            this.memory = this.memory.slice(0, Math.max(0, 500 - suffix.length)) + suffix;
         }
 
         console.log("Memory updated to: ", this.memory);
         this.agent.transcript?.record('memory.summary.end', {
             memory: this.memory
-        }, 'history');
+        }, 'history', { stage: 'memory' });
         return true;
     }
 
@@ -120,6 +122,8 @@ export class History {
     }
 
     async appendFullHistory(to_store) {
+        if (!settings.legacy_logs_enabled)
+            return;
         if (this.full_history_fp === undefined) {
             const string_timestamp = new Date().toLocaleString().replace(/[/:]/g, '-').replace(/ /g, '').replace(/,/g, '_');
             this.full_history_fp = `./bots/${this.name}/histories/${string_timestamp}.json`;
@@ -160,7 +164,7 @@ export class History {
                         this.turns = chunk.concat(this.turns);
                         this.agent.transcript?.record('memory.summary.requeued', {
                             turn_count: chunk.length
-                        }, 'history');
+                        }, 'history', { stage: 'memory' });
                     }
                 })
                 .catch((error) => {
@@ -193,13 +197,13 @@ export class History {
                 world_memory_path: this.agent.world_memory_path || null,
                 turn_count: this.turns.length,
                 has_self_prompt: data.self_prompt != null
-            }, 'history');
+            }, 'history', { stage: 'memory' });
         } catch (error) {
             console.error('Failed to save history:', error);
             this.agent.transcript?.record('memory.save.failure', {
                 path: this.memory_fp,
                 error: error?.message || String(error)
-            }, 'history');
+            }, 'history', { stage: 'memory' });
             throw error;
         }
     }
@@ -231,7 +235,7 @@ export class History {
                 path: this.memory_fp,
                 turn_count: this.turns.length,
                 memory: this.memory
-            }, 'history');
+            }, 'history', { stage: 'memory' });
             return data;
         } catch (error) {
             console.error('Failed to load history:', error);
@@ -246,7 +250,7 @@ export class History {
                 path: this.memory_fp,
                 backup,
                 error: error?.message || String(error)
-            }, 'history');
+            }, 'history', { stage: 'memory' });
             return null;
         }
     }

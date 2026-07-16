@@ -62,6 +62,14 @@ Durable world memory is written to:
 bots/_worlds/{world_id}/memory.json
 ```
 
+Only high- and medium-confidence identities receive a durable world-memory path.
+Low-confidence protocol/server fallbacks and temporary identities keep structured
+memory in the current session but do not write `bots/_worlds/{world_id}`. This
+prevents places, routes, and storage records from bleeding between unrelated
+worlds that happen to reuse the same host or protocol metadata. Set
+`settings.world_id` for durable persistence when the server/world identity is
+known.
+
 `History.save()` still writes chat/session state into:
 
 ```text
@@ -71,6 +79,11 @@ bots/{bot_name}/memory.json
 Legacy `memory_bank` data in `bots/{bot_name}/memory.json` is migrated into the
 world memory file when the resolved identity is high confidence. Corrupt or
 missing typed namespaces are repaired to empty objects during load.
+
+When world memory is merged, timestamped records prefer the newest `updatedAt`
+or compatible timestamp. If colliding records have no usable timestamp, the
+existing file record is preserved rather than silently overwritten by stale
+in-memory data.
 
 This is separate from `History.memory`, the natural-language conversation
 summary injected into prompts as `$TEXT_MEMORY` or the text portion of
@@ -84,24 +97,32 @@ JourneyMap v1 integration uses an optional localhost bridge. The bot setting is:
 
 ```js
 journeymap_bridge_url: "http://127.0.0.1:47892"
-auto_sync_journeymap_on_start: false
+journeymap_waypoints_path: null
+journeymap_auto_discover_waypoints: true
+auto_sync_journeymap_on_start: true
 ```
 
-Startup sync is opt-in. When enabled, the bot imports bridge waypoints after
+Startup sync is opt-in. When enabled, the bot imports JourneyMap waypoints after
 world memory loads, logs `journeymap.startup_sync.*` transcript events, saves
-world memory if waypoints changed, and warns in chat only if the bridge is
+world memory if waypoints changed, and warns in chat only if sync is
 unavailable.
+
+Sync tries the localhost HTTP bridge first. If the bridge is unavailable, the
+bot falls back to local JourneyMap `WaypointData.dat` files. Configure
+`journeymap_waypoints_path` to a specific file or directory when possible. If it
+is unset and `journeymap_auto_discover_waypoints` is true, Mindcraft searches
+common local Minecraft and CurseForge instance folders.
 
 Commands:
 
-- `!syncJourneyMap`: imports waypoints from the bridge into `journeymap.waypoints`.
+- `!syncJourneyMap`: imports waypoints from the bridge or local JourneyMap files into `journeymap.waypoints`.
 - `!importJourneyMapLocation(text)`: imports a pasted shared location string.
 - `!journeyMapWaypoints`: lists imported waypoints.
 - `!goToWaypoint(name)`: navigates to an imported waypoint.
 - `!exportWaypoint(name)`: exports a known place, route endpoint, waypoint, or storage marker to the bridge.
 
-If the bridge is unavailable, commands return a normalized
-`ERR_JOURNEYMAP_BRIDGE_UNAVAILABLE` result and recommend
+If sync is unavailable, commands return a normalized
+`ERR_JOURNEYMAP_SYNC_UNAVAILABLE` result and recommend
 `!importJourneyMapLocation(...)`.
 
 Valid pasted location strings can have reordered fields:
@@ -211,3 +232,41 @@ Data: segment: 4
 ```
 
 This keeps command results useful both for humans and for the next prompt loop.
+Prompt-facing command results are capped before they are added to chat history,
+with a truncation notice that includes the original length. Direct command parses
+must match the whole command string; the command extractor is still used for
+model responses that contain surrounding prose. Optional trailing command
+parameters are filled from their documented defaults, such as
+`!getCraftingPlan("torch")` using quantity `1`.
+
+## Runtime Coordination
+
+`Agent.handleMessage()` is serialized per agent. Chat, system, and self-prompt
+messages enter a per-agent queue so only one model/command loop mutates history,
+action state, objectives, and bot output at a time. The queue also awaits the
+pre-prompt history save so any pending memory summarization is flushed before
+the next prompt is built.
+
+`History.memory` remains a compact natural-language summary and is capped at
+500 characters including its truncation notice. Long action-output summaries use
+the same `Action output:` prefix as short ones so they are filtered out of
+durable natural-language memory.
+
+## Transcripts And Task Ledger
+
+Structured transcript logs are written under:
+
+```text
+bots/{safe_bot_name}/transcripts/{session_id}.jsonl
+bots/{safe_bot_name}/debug/{session_id}.jsonl
+```
+
+The JSONL entries keep the bot's display name in the `agent` field, but the
+directory name is sanitized separately so profile names cannot escape the
+`bots/` directory. Transcript writes are queued and retried after transient
+flush failures instead of dropping already-queued records. Startup pruning still
+uses `settings.transcript_retention_days`; set it to `0` to disable pruning.
+
+The task ledger stores active and recently completed task state in
+`bots/{safe_bot_name}/task_ledger.json`. If that file is corrupt, it is renamed
+to a `.corrupt-<timestamp>` backup before a fresh ledger is written.

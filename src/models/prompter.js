@@ -51,6 +51,7 @@ export class Prompter {
         this.cooldown = this.profile.cooldown ? this.profile.cooldown : 0;
         this.last_prompt_time = 0;
         this.awaiting_coding = false;
+        this.prompt_sequence = 0;
 
         // for backwards compatibility, move max_tokens to params
         let max_tokens = null;
@@ -91,6 +92,8 @@ export class Prompter {
         else {
             this.embedding_model = createModel({api: chat_model_profile.api});
         }
+
+        this._attachTranscriptHooks([this.chat_model, this.code_model, this.vision_model]);
 
         this.skill_libary = new SkillLibrary(agent, this.embedding_model);
         mkdirSync(`./bots/${name}`, { recursive: true });
@@ -151,6 +154,7 @@ export class Prompter {
             position: this.agent.bot?.entity?.position || null,
             lastCommandResultCode: sessionMemory.lastCommandResultCode || null,
             lastCommandResultData: sessionMemory.lastCommandResultData || {},
+            taskLedgerSummary: this.agent.task_ledger?.summary?.() || '',
             sessionMemory,
         };
     }
@@ -163,7 +167,40 @@ export class Prompter {
         return intentMatch ? intentMatch[1].trim().replace(/\s+/g, '_') : null;
     }
 
+    _attachTranscriptHooks(models) {
+        const hooks = {
+            retry: (data) => this.agent?.transcript?.record('model.retry', data, 'prompter', { stage: 'model' }),
+            error: (data) => this.agent?.transcript?.record('model.error', data, 'prompter', { stage: 'model' }),
+        };
+        for (const m of models) {
+            if (!m) continue;
+            m.transcriptHooks = hooks;
+        }
+    }
+
     async replaceStrings(prompt, messages, examples=null, to_summarize=[], last_goals=null, cachedReplacements=null, options={}) {
+        const assembleStart = Date.now();
+        const templateName = options.templateName || 'unknown';
+        const initialLength = prompt?.length ?? 0;
+        this.agent?.transcript?.record('prompt.assemble.start', {
+            template_name: templateName,
+            initial_length: initialLength,
+            message_count: messages?.length ?? 0
+        }, 'prompter', { stage: 'prompt' });
+        const placeholderSnapshots = [];
+        const snapshotPlaceholder = (name, value) => {
+            const row = {
+                name,
+                length: typeof value === 'string' ? value.length : (value == null ? 0 : String(value).length),
+            };
+            if (settings.transcript_include_prompts && typeof value === 'string')
+                row.value = value;
+            placeholderSnapshots.push(row);
+        };
+
+        if (prompt.includes('$NAME')) {
+            snapshotPlaceholder('$NAME', this.agent.name);
+        }
         prompt = prompt.replaceAll('$NAME', this.agent.name);
 
         if (prompt.includes('$STATS')) {
@@ -173,44 +210,56 @@ export class Prompter {
                 value += await getCommand('!nearbyBlocks').perform(this.agent);
                 return value;
             });
+            snapshotPlaceholder('$STATS', stats);
             prompt = prompt.replaceAll('$STATS', stats);
         }
         if (prompt.includes('$INVENTORY')) {
             let inventory = await this._cachedReplacement(cachedReplacements, '$INVENTORY', async () => {
                 return await getCommand('!inventory').perform(this.agent);
             });
+            snapshotPlaceholder('$INVENTORY', inventory);
             prompt = prompt.replaceAll('$INVENTORY', inventory);
         }
         if (prompt.includes('$ACTION')) {
+            snapshotPlaceholder('$ACTION', this.agent.actions.currentActionLabel);
             prompt = prompt.replaceAll('$ACTION', this.agent.actions.currentActionLabel);
         }
-        if (prompt.includes('$COMMAND_DOCS'))
-            prompt = prompt.replaceAll('$COMMAND_DOCS', getCommandDocs(this.agent));
+        if (prompt.includes('$COMMAND_DOCS')) {
+            const docs = getCommandDocs(this.agent);
+            snapshotPlaceholder('$COMMAND_DOCS', docs);
+            prompt = prompt.replaceAll('$COMMAND_DOCS', docs);
+        }
         if (prompt.includes('$CODE_DOCS')) {
-            const code_task_content = messages.slice().reverse().find(msg =>
+            const msgs = messages || [];
+            const code_task_content = msgs.slice().reverse().find(msg =>
                 msg.role !== 'system' && msg.content.includes('!newAction(')
             )?.content?.match(/!newAction\((.*?)\)/)?.[1] || '';
 
-            prompt = prompt.replaceAll(
-                '$CODE_DOCS',
-                await this.skill_libary.getRelevantSkillDocs(code_task_content, settings.relevant_docs_count)
-            );
+            const code_docs = await this.skill_libary.getRelevantSkillDocs(code_task_content, settings.relevant_docs_count);
+            snapshotPlaceholder('$CODE_DOCS', code_docs);
+            prompt = prompt.replaceAll('$CODE_DOCS', code_docs);
         }
         if (prompt.includes('$EXAMPLES') && examples !== null) {
             const exampleMessage = await this._cachedReplacement(cachedReplacements, '$EXAMPLES', async () => {
                 return await examples.createExampleMessage(messages);
             });
+            snapshotPlaceholder('$EXAMPLES', exampleMessage);
             prompt = prompt.replaceAll('$EXAMPLES', exampleMessage);
         }
         if (prompt.includes('$TEXT_MEMORY')) {
-            prompt = prompt.replaceAll('$TEXT_MEMORY', this.agent.history.memory || '');
+            const textMem = this.agent.history.memory || '';
+            snapshotPlaceholder('$TEXT_MEMORY', textMem);
+            prompt = prompt.replaceAll('$TEXT_MEMORY', textMem);
         }
         if (prompt.includes('$STRUCTURED_MEMORY')) {
             const memoryContext = this._memoryContext(messages);
             const structuredMemory = this.agent.memory_bank?.getPromptSummary?.(memoryContext) || '';
             const sessionMemory = formatSessionMemory(memoryContext.sessionMemory);
-            const memory = [sessionMemory, structuredMemory].filter(Boolean).join('\n');
-            prompt = prompt.replaceAll('$STRUCTURED_MEMORY', memory ? `Structured memory:\n${memory}` : '');
+            const taskMemory = memoryContext.taskLedgerSummary || '';
+            const memory = [taskMemory, sessionMemory, structuredMemory].filter(Boolean).join('\n');
+            const block = memory ? `Structured memory:\n${memory}` : '';
+            snapshotPlaceholder('$STRUCTURED_MEMORY', block);
+            prompt = prompt.replaceAll('$STRUCTURED_MEMORY', block);
         }
         if (prompt.includes('$MEMORY')) {
             const textMemory = this.agent.history.memory || '';
@@ -220,29 +269,40 @@ export class Prompter {
                 ? this.agent.memory_bank?.getPromptSummary?.(memoryContext) || ''
                 : '';
             const sessionMemory = includeStructured ? formatSessionMemory(memoryContext.sessionMemory) : '';
-            const memory = [textMemory, (sessionMemory || structuredMemory) ? `Structured memory:\n${[sessionMemory, structuredMemory].filter(Boolean).join('\n')}` : '']
+            const taskMemory = includeStructured ? (memoryContext.taskLedgerSummary || '') : '';
+            const memory = [textMemory, (taskMemory || sessionMemory || structuredMemory) ? `Structured memory:\n${[taskMemory, sessionMemory, structuredMemory].filter(Boolean).join('\n')}` : '']
                 .filter(Boolean)
                 .join('\n');
+            snapshotPlaceholder('$MEMORY', memory);
             prompt = prompt.replaceAll('$MEMORY', memory);
         }
-        if (prompt.includes('$TO_SUMMARIZE'))
-            prompt = prompt.replaceAll('$TO_SUMMARIZE', stringifyTurns(to_summarize));
-        if (prompt.includes('$CONVO'))
-            prompt = prompt.replaceAll('$CONVO', 'Recent conversation:\n' + stringifyTurns(messages));
+        if (prompt.includes('$TO_SUMMARIZE')) {
+            const ts = stringifyTurns(to_summarize);
+            snapshotPlaceholder('$TO_SUMMARIZE', ts);
+            prompt = prompt.replaceAll('$TO_SUMMARIZE', ts);
+        }
+        if (prompt.includes('$CONVO')) {
+            const convo = 'Recent conversation:\n' + stringifyTurns(messages || []);
+            snapshotPlaceholder('$CONVO', convo);
+            prompt = prompt.replaceAll('$CONVO', convo);
+        }
         if (prompt.includes('$SELF_PROMPT')) {
             // if active or paused, show the current goal
-            let self_prompt = !this.agent.self_prompter.isStopped() ? `YOUR CURRENT ASSIGNED GOAL: "${this.agent.self_prompter.prompt}"\n` : '';
+            const self_prompt = !this.agent.self_prompter.isStopped() ? `YOUR CURRENT ASSIGNED GOAL: "${this.agent.self_prompter.prompt}"\n` : '';
+            snapshotPlaceholder('$SELF_PROMPT', self_prompt);
             prompt = prompt.replaceAll('$SELF_PROMPT', self_prompt);
         }
         if (prompt.includes('$LAST_GOALS')) {
             let goal_text = '';
-            for (let goal in last_goals) {
+            for (let goal in last_goals || {}) {
                 if (last_goals[goal])
-                    goal_text += `You recently successfully completed the goal ${goal}.\n`
+                    goal_text += `You recently successfully completed the goal ${goal}.\n`;
                 else
-                    goal_text += `You recently failed to complete the goal ${goal}.\n`
+                    goal_text += `You recently failed to complete the goal ${goal}.\n`;
             }
-            prompt = prompt.replaceAll('$LAST_GOALS', goal_text.trim());
+            goal_text = goal_text.trim();
+            snapshotPlaceholder('$LAST_GOALS', goal_text);
+            prompt = prompt.replaceAll('$LAST_GOALS', goal_text);
         }
         if (prompt.includes('$BLUEPRINTS')) {
             if (this.agent.npc.constructions) {
@@ -250,7 +310,9 @@ export class Prompter {
                 for (let blueprint in this.agent.npc.constructions) {
                     blueprints += blueprint + ', ';
                 }
-                prompt = prompt.replaceAll('$BLUEPRINTS', blueprints.slice(0, -2));
+                blueprints = blueprints.slice(0, -2);
+                snapshotPlaceholder('$BLUEPRINTS', blueprints);
+                prompt = prompt.replaceAll('$BLUEPRINTS', blueprints);
             }
         }
 
@@ -258,6 +320,17 @@ export class Prompter {
         let remaining = prompt.match(/\$[A-Z_]+/g);
         if (remaining !== null) {
             console.warn('Unknown prompt placeholders:', remaining.join(', '));
+        }
+        this.agent?.transcript?.record('prompt.assemble.end', {
+            template_name: templateName,
+            duration_ms: Date.now() - assembleStart,
+            prompt_length: prompt.length,
+        }, 'prompter', { stage: 'prompt' });
+
+        if (placeholderSnapshots.length > 0) {
+            this.agent?.transcript?.record('prompt.placeholders.resolved', {
+                placeholders: placeholderSnapshots,
+            }, 'prompter', { stage: 'prompt', debug: true });
         }
         return prompt;
     }
@@ -279,17 +352,16 @@ export class Prompter {
     }
 
     async promptConvo(messages) {
-        this.most_recent_msg_time = Date.now();
-        let current_msg_time = this.most_recent_msg_time;
-        const stableReplacements = new Map();
+        const currentPromptSequence = ++this.prompt_sequence;
 
         for (let i = 0; i < 3; i++) { // try 3 times to avoid hallucinations
             await this.checkCooldown();
-            if (current_msg_time !== this.most_recent_msg_time) {
+            if (currentPromptSequence !== this.prompt_sequence) {
                 return '';
             }
 
             let prompt = this.profile.conversing;
+            const stableReplacements = new Map();
             prompt = await this.replaceStrings(prompt, messages, this.convo_examples, [], null, stableReplacements);
             let generation;
             const start = Date.now();
@@ -298,8 +370,9 @@ export class Prompter {
                 attempt: i + 1,
                 model: this.chat_model?.model_name,
                 message_count: messages?.length ?? 0,
-                prompt
-            }, 'prompter');
+                prompt,
+                messages
+            }, 'prompter', { stage: 'model' });
 
             try {
                 generation = await this.chat_model.sendRequest(messages, prompt);
@@ -314,16 +387,16 @@ export class Prompter {
                     attempt: i + 1,
                     duration_ms: Date.now() - start,
                     response: generation
-                }, 'prompter');
+                }, 'prompter', { stage: 'model' });
 
             } catch (error) {
                 console.error('Error during message generation or file writing:', error);
-                this.agent.transcript?.record('model.failure', {
+                this.agent.transcript?.record('model.error', {
                     kind: 'conversation',
                     attempt: i + 1,
                     duration_ms: Date.now() - start,
                     error: error?.message || String(error)
-                }, 'prompter');
+                }, 'prompter', { stage: 'model' });
                 continue;
             }
 
@@ -334,17 +407,17 @@ export class Prompter {
                     kind: 'conversation',
                     reason: 'hallucinated_other_bot',
                     response: generation
-                }, 'prompter');
+                }, 'prompter', { stage: 'model' });
                 continue;
             }
 
-            if (current_msg_time !== this.most_recent_msg_time) {
+            if (currentPromptSequence !== this.prompt_sequence) {
                 console.warn(`${this.agent.name} received new message while generating, discarding old response.`);
                 this.agent.transcript?.record('model.discarded', {
                     kind: 'conversation',
                     reason: 'newer_message_received',
                     response: generation
-                }, 'prompter');
+                }, 'prompter', { stage: 'model' });
                 return '';
             }
 
@@ -374,8 +447,9 @@ export class Prompter {
             kind: 'coding',
             model: this.code_model?.model_name,
             message_count: messages?.length ?? 0,
-            prompt
-        }, 'prompter');
+            prompt,
+            messages
+        }, 'prompter', { stage: 'model' });
         try {
             let resp = await this.code_model.sendRequest(messages, prompt);
             await this._saveLog(prompt, messages, resp, 'coding');
@@ -383,14 +457,14 @@ export class Prompter {
                 kind: 'coding',
                 duration_ms: Date.now() - start,
                 response: resp
-            }, 'prompter');
+            }, 'prompter', { stage: 'model' });
             return resp;
         } catch (error) {
-            this.agent.transcript?.record('model.failure', {
+            this.agent.transcript?.record('model.error', {
                 kind: 'coding',
                 duration_ms: Date.now() - start,
                 error: error?.message || String(error)
-            }, 'prompter');
+            }, 'prompter', { stage: 'model' });
             throw error;
         } finally {
             this.awaiting_coding = false;
@@ -410,8 +484,9 @@ export class Prompter {
             kind: 'new_action_plan',
             model: this.chat_model?.model_name,
             message_count: messages?.length ?? 0,
-            prompt
-        }, 'prompter');
+            prompt,
+            messages
+        }, 'prompter', { stage: 'model' });
         try {
             let resp = await this.chat_model.sendRequest(messages, prompt);
             await this._saveLog(prompt, messages, resp, 'newActionPlan');
@@ -419,14 +494,14 @@ export class Prompter {
                 kind: 'new_action_plan',
                 duration_ms: Date.now() - start,
                 response: resp
-            }, 'prompter');
+            }, 'prompter', { stage: 'model' });
             return resp;
         } catch (error) {
-            this.agent.transcript?.record('model.failure', {
+            this.agent.transcript?.record('model.error', {
                 kind: 'new_action_plan',
                 duration_ms: Date.now() - start,
                 error: error?.message || String(error)
-            }, 'prompter');
+            }, 'prompter', { stage: 'model' });
             throw error;
         }
     }
@@ -440,20 +515,30 @@ export class Prompter {
             kind: 'memory',
             model: this.chat_model?.model_name,
             message_count: to_summarize?.length ?? 0,
-            prompt
-        }, 'prompter');
-        let resp = await this.chat_model.sendRequest([], prompt);
-        await this._saveLog(prompt, to_summarize, resp, 'memSaving');
-        this.agent.transcript?.record('model.response', {
-            kind: 'memory',
-            duration_ms: Date.now() - start,
-            response: resp
-        }, 'prompter');
-        if (resp?.includes('</think>')) {
-            const [_, afterThink] = resp.split('</think>')
-            resp = afterThink;
+            prompt,
+            messages: to_summarize
+        }, 'prompter', { stage: 'model' });
+        try {
+            let resp = await this.chat_model.sendRequest([], prompt);
+            await this._saveLog(prompt, to_summarize, resp, 'memSaving');
+            this.agent.transcript?.record('model.response', {
+                kind: 'memory',
+                duration_ms: Date.now() - start,
+                response: resp
+            }, 'prompter', { stage: 'model' });
+            if (resp?.includes('</think>')) {
+                const [__, afterThink] = resp.split('</think>');
+                resp = afterThink;
+            }
+            return resp;
+        } catch (error) {
+            this.agent.transcript?.record('model.error', {
+                kind: 'memory',
+                duration_ms: Date.now() - start,
+                error: error?.message || String(error),
+            }, 'prompter', { stage: 'model' });
+            throw error;
         }
-        return resp;
     }
 
     async promptShouldRespondToBot(new_message) {
@@ -461,20 +546,21 @@ export class Prompter {
         let prompt = this.profile.bot_responder;
         let messages = this.agent.history.getHistory();
         messages.push({role: 'user', content: new_message});
-        prompt = await this.replaceStrings(prompt, null, null, messages);
+        prompt = await this.replaceStrings(prompt, messages, null, messages);
         const start = Date.now();
         this.agent.transcript?.record('model.request', {
             kind: 'bot_responder',
             model: this.chat_model?.model_name,
             message_count: messages.length,
-            prompt
-        }, 'prompter');
+            prompt,
+            messages
+        }, 'prompter', { stage: 'model' });
         let res = await this.chat_model.sendRequest([], prompt);
         this.agent.transcript?.record('model.response', {
             kind: 'bot_responder',
             duration_ms: Date.now() - start,
             response: res
-        }, 'prompter');
+        }, 'prompter', { stage: 'model' });
         return res.trim().toLowerCase() === 'respond';
     }
 
@@ -488,14 +574,15 @@ export class Prompter {
             model: this.vision_model?.model_name,
             message_count: messages?.length ?? 0,
             image_bytes: imageBuffer?.length,
-            prompt
-        }, 'prompter');
+            prompt,
+            messages
+        }, 'prompter', { stage: 'model' });
         const res = await this.vision_model.sendVisionRequest(messages, prompt, imageBuffer);
         this.agent.transcript?.record('model.response', {
             kind: 'vision',
             duration_ms: Date.now() - start,
             response: res
-        }, 'prompter');
+        }, 'prompter', { stage: 'model' });
         return res;
     }
 
@@ -527,7 +614,7 @@ export class Prompter {
     }
 
     async _saveLog(prompt, messages, generation, tag) {
-        if (!settings.log_all_prompts)
+        if (!(settings.legacy_logs_enabled && settings.log_all_prompts))
             return;
         const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
         let logEntry;
