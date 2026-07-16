@@ -1,6 +1,7 @@
 import OpenAIApi from 'openai';
 import { getKey, hasKey } from '../utils/keys.js';
 import { strictFormat } from '../utils/text.js';
+import { notifyContextTruncateRetry, notifyModelResponseFallback, notifyModelRetryVisionFallback } from './_model_transcript_helpers.js';
 
 export class GPT {
     static prefix = 'openai';
@@ -22,11 +23,6 @@ export class GPT {
     }
 
     async sendRequest(turns, systemMessage, stop_seq='***') {
-        let messages = strictFormat(turns);
-        messages = messages.map(message => {
-            message.content += stop_seq;
-            return message;
-        });
         let model = this.model_name || "gpt-5.4-mini";
 
         let res = null;
@@ -36,8 +32,10 @@ export class GPT {
             // if a custom URL is set, use chat.completions
             // because custom "OpenAI-compatible" endpoints likely do not have responses endpoint
             if (this.url) {
-                let messages = [{'role': 'system', 'content': systemMessage}].concat(turns);
-                messages = strictFormat(messages);
+                const messages = [
+                    { 'role': 'system', 'content': systemMessage },
+                    ...strictFormat(turns)
+                ];
                 const pack = {
                     model: model,
                     messages,
@@ -55,11 +53,7 @@ export class GPT {
             } 
             // otherwise, use responses
             else {
-                let messages = strictFormat(turns);
-                messages = messages.map(message => {
-                    message.content += stop_seq;
-                    return message;
-                });
+                const messages = strictFormat(turns);
                 const response = await this.openai.responses.create({
                     model: model,
                     instructions: systemMessage,
@@ -75,12 +69,15 @@ export class GPT {
         catch (err) {
             if ((err.message == 'Context length exceeded' || err.code == 'context_length_exceeded') && turns.length > 1) {
                 console.log('Context length exceeded, trying again with shorter context.');
+                notifyContextTruncateRetry(this, turns.length - 1);
                 return await this.sendRequest(turns.slice(1), systemMessage, stop_seq);
             } else if (err.message.includes('image_url')) {
                 console.log(err);
+                notifyModelRetryVisionFallback(this);
                 res = 'Vision is only supported by certain models.';
             } else {
                 console.log(err);
+                notifyModelResponseFallback(this, err);
                 res = 'My brain disconnected, try again.';
             }
         }

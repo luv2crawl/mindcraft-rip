@@ -34,4 +34,6 @@ RUN npm install
 
 COPY . .
 
+RUN npm run build:ui
+
 CMD ["npm", "start"]

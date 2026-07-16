@@ -10,8 +10,8 @@ const settings = {
     
     "base_profile": "assistant", // survival, assistant, creative, or god_mode
     "profiles": [
-        "./profiles/deepseek.json",
-        // "./profiles/gpt.json",
+        // "./profiles/deepseek.json",
+        "./profiles/gpt.json",
         // "./profiles/claude.json",
         // "./profiles/gemini.json",
         // "./profiles/llama.json",
@@ -40,7 +40,7 @@ const settings = {
     "render_bot_view": false, // show bot's view in browser at localhost:3000, 3001...
 
     "allow_insecure_coding": true, // allows newAction command and model can write/run code on your computer. enable at own risk
-    "allow_vision": false, // allows vision model to interpret screenshots as inputs
+    "allow_vision": true, // allows vision model to interpret screenshots as inputs
     "blocked_actions" : ["!checkBlueprint", "!checkBlueprintLevel", "!getBlueprint", "!getBlueprintLevel"] , // commands to disable and remove from docs. Ex: ["!setMode"]
     "code_timeout_mins": -1, // minutes code is allowed to run. -1 for no timeout
     "relevant_docs_count": 5, // number of relevant code function docs to select for prompting. -1 for all
@@ -67,18 +67,30 @@ const settings = {
     "nav_chunk_distance": 80,   // target chunk size (blocks)
     "nav_chunk_retry_limit": 2, // retries per chunk before giving up that chunk
     "journeymap_bridge_url": "http://127.0.0.1:47892", // optional local JourneyMap companion bridge
-    "world_id": null, // optional canonical id for this Minecraft world. Best way to scope durable map/storage memory.
+    "journeymap_waypoints_path": null, // optional JourneyMap WaypointData.dat file or directory containing waypoint data
+    "journeymap_auto_discover_waypoints": true, // search common local JourneyMap instance folders when no path is configured
+    "world_id": "local_forge_1_21_11_overworld", // optional canonical id for this Minecraft world. Best way to scope durable map/storage memory.
     "server_path": null, // optional local server root; used to derive world identity from server.properties.
     "world_path": null, // optional direct local world save path; used to derive world identity.
     "load_world_memory": true, // load durable world-scoped MemoryBank facts independently of chat memory
     "warn_on_low_confidence_world_id": true, // chat a warning when durable world identity is only a weak fallback
     "auto_sync_journeymap_on_start": false, // opt-in: import JourneyMap bridge waypoints after world memory loads
 
-    "log_all_prompts": true, // log ALL prompts to file
+    "log_all_prompts": false, // legacy: log ALL prompts to ./bots/{bot}/logs/conversation_*.txt. Superseded by transcript_logging+transcript_include_prompts. Now also gated by legacy_logs_enabled.
     "transcript_logging": true, // append JSONL runtime transcript events to ./bots/{bot}/transcripts
-    "transcript_include_prompts": false, // include full prompt bodies in transcript logs
+    "transcript_include_prompts": true, // include full prompt bodies in transcript logs (canonical record)
     "transcript_include_code": true, // include generated action code in transcript logs
     "transcript_max_field_chars": 20000, // truncate long transcript fields
+    "debug_logging": false, // when true, additionally write high-frequency debug events (pathfinder ticks, mode evaluation churn, placeholder resolution detail) to ./bots/{bot}/debug/<sessionId>.jsonl
+    "legacy_logs_enabled": false, // when true, also write legacy ./bots/{bot}/logs/conversation_*.txt and ./bots/{bot}/histories/*.json files (deprecated; transcript_logging is now canonical)
+    "transcript_retention_days": 7, // on agent start, prune transcripts/*.jsonl and debug/*.jsonl older than this many days. 0 disables pruning.
+    "action_stuck_poll_ms": 10000, // while executing action code: how often to sample for positional/inventory stagnation
+    "action_stuck_after_ms": 45000, // emit action.stuck if no notable movement/inventory change for this long during an action
+    "task_ledger_enabled": true, // persist current user task and verified progress to bots/{agent}/task_ledger.json
+    "task_status_chat_enabled": true, // chat concise task milestone/blocker updates for long-running tasks
+    "task_status_heartbeat_ms": 60000, // minimum interval between repeated task progress chat messages
+    "task_history_limit": 20, // number of completed/failed tasks to keep in the task ledger history
+    "mining_verify_completion": true, // require inventory/storage evidence before declaring mining objectives complete
 };
 
 export default settings;

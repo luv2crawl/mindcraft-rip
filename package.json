@@ -28,6 +28,7 @@
         "open": "^10.2.0",
         "openai": "^4.4.0",
         "prismarine-item": "^1.15.0",
+        "prismarine-nbt": "^2.8.0",
         "prismarine-viewer": "^1.32.0",
         "replicate": "^0.29.4",
         "ses": "^1.9.1",
@@ -44,12 +45,23 @@
     "scripts": {
         "postinstall": "patch-package",
         "start": "node main.js",
+        "build:ui": "node scripts/clean-ui-assets.js && vite build --config mindserver-ui/vite.config.ts",
+        "dev:ui": "vite --config mindserver-ui/vite.config.ts",
         "explorer": "node tools/explorer/server.js",
         "test": "node --test test/",
         "reinstall": "npm run clean:modules && npm install",
         "clean:modules": "node -e \"const fs=require('fs');const p=require('path');['node_modules','package-lock.json'].forEach(f=>{if(fs.existsSync(f)){if(fs.lstatSync(f).isDirectory()){fs.rmSync(f,{recursive:true,force:true});}else{fs.unlinkSync(f);}}});\""
     },
     "devDependencies": {
-        "patch-package": "^8.0.0"
+        "@tanstack/react-query": "^5.62.8",
+        "@tanstack/react-virtual": "^3.11.2",
+        "@types/react": "^18.3.18",
+        "@types/react-dom": "^18.3.5",
+        "@vitejs/plugin-react": "^4.3.4",
+        "patch-package": "^8.0.0",
+        "react": "^18.3.1",
+        "react-dom": "^18.3.1",
+        "typescript": "~5.7.2",
+        "vite": "^6.0.7"
     }
 }

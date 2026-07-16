@@ -18,6 +18,14 @@ function makeAgent() {
                 events.push(['transcript', event, data, source]);
             }
         },
+        self_prompter: {
+            isActive() {
+                return false;
+            }
+        },
+        isIdle() {
+            return true;
+        },
         clearBotLogs() {
             this.bot.output = '';
             this.bot.interrupt_code = false;
@@ -55,5 +63,19 @@ describe('ActionManager interruption handling', () => {
         assert.ok(!agent.events.some(entry => entry[0] === 'transcript' && entry[1] === 'action.failure'));
         assert.equal(actions.executing, false);
         assert.equal(actions.currentActionLabel, '');
+    });
+
+    test('resumeAction registers labeled resumable work with the right argument shape', async () => {
+        const agent = makeAgent();
+        const actions = new ActionManager(agent);
+        let calls = 0;
+
+        const result = await actions.resumeAction('action:resume-test', async () => {
+            calls += 1;
+        }, 1);
+
+        assert.equal(calls, 1);
+        assert.equal(result.success, true);
+        assert.equal(actions.resume_name, 'action:resume-test');
     });
 });

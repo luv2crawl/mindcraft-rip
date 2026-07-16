@@ -4,8 +4,9 @@ import { strictFormat } from '../utils/text.js';
 
 export class OpenRouter {
     static prefix = 'openrouter';
-    constructor(model_name, url) {
+    constructor(model_name, url, params) {
         this.model_name = model_name;
+        this.params = params || {};
 
         let config = {};
         config.baseURL = url || 'https://openrouter.ai/api/v1';
@@ -29,7 +30,8 @@ export class OpenRouter {
         const pack = {
             model: this.model_name,
             messages,
-            stop: stop_seq
+            stop: stop_seq,
+            ...(this.params || {})
         };
 
         let res = null;

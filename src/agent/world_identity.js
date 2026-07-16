@@ -155,7 +155,7 @@ function resolveProtocolFallback(agent) {
 }
 
 export async function resolveWorldIdentity(agent) {
-    agent?.transcript?.record('world_identity.resolve.start', {}, 'world_identity');
+    agent?.transcript?.record('world_identity.resolve.start', {}, 'world_identity', { stage: 'memory' });
 
     const configured = makeIdentity({
         worldId: settings.world_id,
@@ -185,7 +185,7 @@ export async function resolveWorldIdentity(agent) {
         confidence: identity.confidence,
         fingerprint: identity.fingerprint,
         evidence: identity.evidence,
-    }, 'world_identity');
+    }, 'world_identity', { stage: 'memory' });
 
     return identity;
 }

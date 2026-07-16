@@ -1,5 +1,6 @@
 import OpenAIApi from 'openai';
 import { getKey } from '../utils/keys.js';
+import { notifyContextTruncateRetry, notifyModelResponseFallback, notifyModelRetryVisionFallback } from './_model_transcript_helpers.js';
 
 // xAI doesn't supply a SDK for their models, but fully supports OpenAI and Anthropic SDKs
 export class Grok {
@@ -42,12 +43,15 @@ export class Grok {
         catch (err) {
             if ((err.message == 'Context length exceeded' || err.code == 'context_length_exceeded') && turns.length > 1) {
                 console.log('Context length exceeded, trying again with shorter context.');
+                notifyContextTruncateRetry(this, turns.length - 1);
                 return await this.sendRequest(turns.slice(1), systemMessage);
             } else if (err.message.includes('The model expects a single `text` element per message.')) {
                 console.log(err);
+                notifyModelRetryVisionFallback(this);
                 res = 'Vision is only supported by certain models.';
             } else {
                 console.log(err);
+                notifyModelResponseFallback(this, err);
                 res = 'My brain disconnected, try again.';
             }
         }

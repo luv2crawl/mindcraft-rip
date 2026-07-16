@@ -72,7 +72,7 @@ function backupInvalidWorldMemory(agent, memoryPath, error) {
         path: memoryPath,
         backup,
         error: error?.message || String(error),
-    }, 'world_memory');
+    }, 'world_memory', { stage: 'memory' });
     return backup;
 }
 
@@ -118,7 +118,9 @@ function mergeMemoryJson(base, incoming) {
                 || Object.prototype.hasOwnProperty.call(value, 'counts')
                 || Object.prototype.hasOwnProperty.call(value, 'breadcrumbs');
             if (existingLooksLikeRecord || valueLooksLikeRecord) {
-                merged[key] = memoryTimestamp(existing) > memoryTimestamp(value)
+                const existingTime = memoryTimestamp(existing);
+                const valueTime = memoryTimestamp(value);
+                merged[key] = existingTime >= valueTime
                     ? clone(existing)
                     : clone(value);
             } else {
@@ -157,7 +159,7 @@ function mergeLegacyMemory(bank, legacyMemoryBank) {
 }
 
 export function getWorldMemoryPath(worldIdentity) {
-    if (worldIdentity?.confidence === 'temporary') return null;
+    if (!['high', 'medium'].includes(worldIdentity?.confidence)) return null;
     const safeWorldId = sanitizeWorldId(worldIdentity?.world_id);
     if (!safeWorldId) return null;
     return path.join('.', 'bots', '_worlds', safeWorldId, 'memory.json');
@@ -168,6 +170,12 @@ export function loadWorldMemory(agent, worldIdentity, { legacyMemoryBank = null 
     const bank = new MemoryBank();
     if (!memoryPath) {
         agent.memory_bank = bank;
+        agent.world_memory_path = null;
+        agent.transcript?.record('world_memory.persistence.skipped', {
+            world_id: worldIdentity?.world_id,
+            confidence: worldIdentity?.confidence,
+            source: worldIdentity?.source,
+        }, 'world_memory', { stage: 'memory' });
         return { loaded: false, path: null, migratedLegacy: false };
     }
 
@@ -191,7 +199,7 @@ export function loadWorldMemory(agent, worldIdentity, { legacyMemoryBank = null 
             path: memoryPath,
             world_id: worldIdentity?.world_id,
             confidence: worldIdentity?.confidence,
-        }, 'world_memory');
+        }, 'world_memory', { stage: 'memory' });
     }
     if (migratedLegacy) {
         bank.dirty = true;
@@ -205,13 +213,13 @@ export function loadWorldMemory(agent, worldIdentity, { legacyMemoryBank = null 
         migrated_legacy: migratedLegacy,
         world_id: worldIdentity?.world_id,
         confidence: worldIdentity?.confidence,
-    }, 'world_memory');
+    }, 'world_memory', { stage: 'memory' });
 
     if (migratedLegacy) {
         agent.transcript?.record('world_memory.migrate_legacy', {
             path: memoryPath,
             world_id: worldIdentity?.world_id,
-        }, 'world_memory');
+        }, 'world_memory', { stage: 'memory' });
     }
     return { loaded, path: memoryPath, migratedLegacy };
 }
@@ -242,6 +250,6 @@ export function saveWorldMemory(agent) {
         path: memoryPath,
         world_id: agent.world_identity?.world_id,
         confidence: agent.world_identity?.confidence,
-    }, 'world_memory');
+    }, 'world_memory', { stage: 'memory' });
     return true;
 }

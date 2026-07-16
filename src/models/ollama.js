@@ -1,4 +1,5 @@
 import { strictFormat } from '../utils/text.js';
+import { notifyContextTruncateRetry, notifyModelResponseFallback } from './_model_transcript_helpers.js';
 
 export class Ollama {
     static prefix = 'ollama';
@@ -7,7 +8,7 @@ export class Ollama {
         this.params = params;
         this.url = url || 'http://127.0.0.1:11434';
         this.chat_endpoint = '/api/chat';
-        this.embedding_endpoint = '/api/embeddings';
+        this.embedding_endpoint = '/api/embed';
     }
 
     async sendRequest(turns, systemMessage) {
@@ -37,9 +38,11 @@ export class Ollama {
             } catch (err) {
                 if (err.message.toLowerCase().includes('context length') && turns.length > 1) {
                     console.log('Context length exceeded, trying again with shorter context.');
+                    notifyContextTruncateRetry(this, turns.length - 1);
                     return await this.sendRequest(turns.slice(1), systemMessage);
                 } else {
                     console.log(err);
+                    notifyModelResponseFallback(this, err);
                     res = 'My brain disconnected, try again.';
                 }
             }
@@ -72,7 +75,11 @@ export class Ollama {
         let model = this.model_name || 'embeddinggemma';
         let body = { model: model, input: text };
         let res = await this.send(this.embedding_endpoint, body);
-        return res['embedding'];
+        const embedding = res?.embeddings?.[0] || res?.embedding;
+        if (!Array.isArray(embedding)) {
+            throw new Error('Ollama embedding response did not include a numeric vector.');
+        }
+        return embedding;
     }
 
     async send(endpoint, body) {

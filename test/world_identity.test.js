@@ -107,6 +107,18 @@ describe('world identity resolution', () => {
 });
 
 describe('world memory persistence', () => {
+    test('low-confidence identities do not get durable world memory paths', () => {
+        const identity = { world_id: 'protocol_low_confidence_world', source: 'protocol_session', confidence: 'low' };
+        const agent = makeAgent();
+
+        const result = loadWorldMemory(agent, identity);
+
+        assert.equal(getWorldMemoryPath(identity), null);
+        assert.equal(result.path, null);
+        assert.equal(agent.world_memory_path, null);
+        assert.ok(agent.events.some(e => e.event === 'world_memory.persistence.skipped'));
+    });
+
     test('same world id reloads saved places, waypoints, routes, and storage', () => {
         const identity = {
             world_id: 'reload_world_memory',
@@ -304,6 +316,35 @@ describe('world memory persistence', () => {
         }
     });
 
+    test('same-key records without timestamps preserve existing file data', () => {
+        const identity = { world_id: 'timestamp_tie_world_memory', source: 'settings.world_id', confidence: 'high' };
+        const memoryPath = getWorldMemoryPath(identity);
+        try {
+            rmSync(path.dirname(memoryPath), { recursive: true, force: true });
+            mkdirSync(path.dirname(memoryPath), { recursive: true });
+            writeFileSync(memoryPath, JSON.stringify({
+                world_identity: identity,
+                memory_bank: {
+                    places: {
+                        BASE: { name: 'BASE', x: 1, y: 64, z: 1 },
+                    },
+                },
+                saved_at: new Date().toISOString(),
+            }, null, 2), 'utf8');
+            const agent = makeAgent();
+            loadWorldMemory(agent, identity);
+            agent.memory_bank.remember('places', 'BASE', { name: 'BASE', x: 99, y: 64, z: 99 });
+            saveWorldMemory(agent);
+
+            const loaded = makeAgent();
+            loadWorldMemory(loaded, identity);
+
+            assert.deepEqual(loaded.memory_bank.recallPlace('BASE'), [1, 64, 1]);
+        } finally {
+            rmSync(path.dirname(memoryPath), { recursive: true, force: true });
+        }
+    });
+
     test('migrates legacy memory only for high-confidence identity and saves world file', () => {
         const identity = {
             world_id: 'test_world_memory',
@@ -449,7 +490,14 @@ describe('world memory persistence', () => {
         const identityDir = path.join('.', 'bots', '_worlds', 'startup_jm_failure');
         try {
             rmSync(identityDir, { recursive: true, force: true });
-            setSettings({ ...originalSettings, world_id: 'startup_jm_failure', auto_sync_journeymap_on_start: true, journeymap_bridge_url: 'http://bridge.test' });
+            setSettings({
+                ...originalSettings,
+                world_id: 'startup_jm_failure',
+                auto_sync_journeymap_on_start: true,
+                journeymap_bridge_url: 'http://bridge.test',
+                journeymap_auto_discover_waypoints: false,
+                journeymap_waypoints_path: null,
+            });
             globalThis.fetch = async () => {
                 throw new Error('bridge_down');
             };

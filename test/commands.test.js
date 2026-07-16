@@ -1,6 +1,18 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
-import { containsCommand, extractCommandMessages, normalizeCommandResult, renderCommandResult } from '../src/agent/commands/index.js';
+import {
+    blacklistCommands,
+    commandExists,
+    containsCommand,
+    executeCommand,
+    extractCommandMessages,
+    getCommand,
+    getCommandDocs,
+    parseCommandMessage,
+    normalizeCommandResult,
+    renderCommandResult,
+    MAX_COMMAND_RESULT_CHARS,
+} from '../src/agent/commands/index.js';
 
 describe('command extraction', () => {
     test('returns no commands when none are present', () => {
@@ -61,5 +73,84 @@ describe('command result normalization', () => {
         assert.equal(result.ok, false);
         assert.equal(result.code, 'ERR_EMPTY_RESULT');
         assert.equal(renderCommandResult(result), 'ERR_EMPTY_RESULT: Command returned no result.');
+    });
+
+    test('rendered command results are capped before history insertion', () => {
+        const rendered = renderCommandResult('x'.repeat(MAX_COMMAND_RESULT_CHARS + 1000));
+
+        assert.ok(rendered.length < MAX_COMMAND_RESULT_CHARS + 200);
+        assert.match(rendered, /command result truncated/);
+    });
+});
+
+describe('command parsing', () => {
+    test('rejects trailing junk for direct parse paths', () => {
+        const parsed = parseCommandMessage('!inventory trailing text');
+
+        assert.equal(parsed, 'Command is incorrectly formatted');
+    });
+
+    test('fills documented optional parameter defaults', () => {
+        const parsed = parseCommandMessage('!getCraftingPlan("torch")');
+
+        assert.deepEqual(parsed, {
+            commandName: '!getCraftingPlan',
+            args: ['torch', 1]
+        });
+    });
+});
+
+describe('per-agent blocked commands', () => {
+    test('blacklistCommands does not mutate the global command registry', () => {
+        const blocked = blacklistCommands(['!help', '!stop']);
+        const blockedAgent = { blocked_actions: blocked, transcript: { record: () => {} } };
+        const openAgent = { blocked_actions: [], transcript: { record: () => {} } };
+
+        assert.deepEqual(blocked, ['!help']);
+        assert.equal(commandExists('!help'), true);
+        assert.equal(commandExists('!help', blockedAgent), false);
+        assert.equal(commandExists('!help', openAgent), true);
+        assert.equal(commandExists('!stop', blockedAgent), true);
+        assert.doesNotMatch(getCommandDocs(blockedAgent), /!help:/);
+        assert.match(getCommandDocs(openAgent), /!help:/);
+    });
+
+    test('executeCommand rejects only the blocked agent', async () => {
+        const blockedAgent = { blocked_actions: ['!help'], transcript: { record: () => {} } };
+        const openAgent = { blocked_actions: [], transcript: { record: () => {} } };
+
+        const blocked = await executeCommand(blockedAgent, '!help');
+        const open = await executeCommand(openAgent, '!help');
+
+        assert.equal(blocked.code, 'ERR_COMMAND_MISSING');
+        assert.notEqual(open.code, 'ERR_COMMAND_MISSING');
+        assert.match(open.raw, /\*COMMAND DOCS/);
+    });
+});
+
+describe('task status command', () => {
+    test('reports active task ledger state', async () => {
+        const agent = {
+            task_ledger: {
+                current: {
+                    id: 'mine_copper_1',
+                    userGoal: 'mine 4 copper',
+                    kind: 'mine',
+                    target: 'copper',
+                    status: 'blocked',
+                    phase: 'VERIFY',
+                    progress: { mined: 4, verified: 0, target: 4 },
+                    blockedReason: 'mining_verification_failed',
+                    nextAction: '!recoverDroppedItems',
+                },
+            },
+        };
+
+        const out = await getCommand('!taskStatus').perform(agent);
+
+        assert.match(out, /FAILED: blocked/);
+        assert.match(out, /mine 4 copper/);
+        assert.match(out, /verified=0\/4/);
+        assert.match(out, /Next: !recoverDroppedItems/);
     });
 });

@@ -16,13 +16,17 @@ import { serverProxy, sendOutputToServer } from './mindserver_proxy.js';
 import settings from './settings.js';
 import { Task } from './tasks/tasks.js';
 import { speak } from './speak.js';
-import { log, validateNameFormat, handleDisconnection } from './connection_handler.js';
-import { TranscriptLogger } from './transcript_logger.js';
+import { log, validateNameFormat, handleDisconnection, parseKickReason } from './connection_handler.js';
+import { appendFileSync } from 'fs';
+import { randomUUID } from 'crypto';
+import path from 'path';
+import { TranscriptLogger, pruneOldTranscripts } from './transcript_logger.js';
 import { ObjectiveStack } from './objectives/objective_stack.js';
 import { resolveWorldIdentity } from './world_identity.js';
 import { loadWorldMemory, saveWorldMemory } from './world_memory.js';
-import { fetchBridgeWaypoints, mergeJourneyMapWaypoints } from './journeymap.js';
-import { createSessionMemory, noteCommandResult, noteCommandStart } from './session_memory.js';
+import { fetchJourneyMapWaypoints, mergeJourneyMapWaypoints } from './journeymap.js';
+import { createSessionMemory, noteCommandResult, noteCommandStart, noteUserIntent } from './session_memory.js';
+import { TaskLedger } from './task_ledger.js';
 
 function _configuredMaxCommands() {
     if (settings.max_commands === -1) return Infinity;
@@ -58,6 +62,7 @@ export class Agent {
         this.last_sender = null;
         this.count_id = count_id;
         this._disconnectHandled = false;
+        this._messageQueue = Promise.resolve();
 
         // Initialize components
         this.actions = new ActionManager(this);
@@ -66,13 +71,32 @@ export class Agent {
         this.prompter = new Prompter(this, settings.profile);
         this.name = (this.prompter.getName() || '').trim();
         this.transcript = new TranscriptLogger(this.name || 'unknown');
+        this.task_ledger = new TaskLedger(this.name || 'unknown', this).load();
+        pruneOldTranscripts(this.name || 'unknown', settings.transcript_retention_days);
         this.transcript.record('agent.start', {
             load_mem,
             init_message,
             count_id,
             profile_name: settings.profile?.name,
             model: settings.profile?.model
-        }, 'agent');
+        }, 'agent', { stage: 'system' });
+        if (serverProxy.connected) {
+            const sock = serverProxy.getSocket();
+            if (sock) {
+                this.transcript.setRelayHook(({ entry, debug }) => {
+                    try {
+                        sock.emit('transcript-event', {
+                            agent: this.name,
+                            sessionId: this.transcript.sessionId,
+                            entry,
+                            debug,
+                        });
+                    } catch {
+                        /* never break logging */
+                    }
+                });
+            }
+        }
         console.log(`Initializing agent ${this.name}...`);
         
         // Validate Name Format
@@ -105,11 +129,11 @@ export class Agent {
             taskStart = Date.now();
         }
         this.task = new Task(this, settings.task, taskStart);
-        this.blocked_actions = settings.blocked_actions.concat(this.task.blocked_actions || []);
-        blacklistCommands(this.blocked_actions);
+        this.blocked_actions = blacklistCommands(settings.blocked_actions.concat(this.task.blocked_actions || []));
 
         console.log(this.name, 'logging into minecraft...');
         this.bot = initBot(this.name);
+        this.bot.mindcraft_agent = this;
         
         // Connection Handler
         const onDisconnect = (event, reason) => {
@@ -119,11 +143,20 @@ export class Agent {
             // Log and Analyze
             // handleDisconnection handles logging to console and server
             const { type } = handleDisconnection(this.name, reason);
+            if (event === 'Kicked') {
+                const kick = parseKickReason(reason);
+                this.transcript?.record('connection.kicked', {
+                    raw_reason: reason,
+                    parsed_category: kick.type,
+                    is_fatal: kick.isFatal,
+                    last_pos: this.bot?.entity?.position ?? null,
+                }, 'agent', { stage: 'connection' });
+            }
             this.transcript?.record('agent.disconnect', {
                 event,
                 type,
                 reason
-            }, 'agent');
+            }, 'agent', { stage: 'connection' });
      
             process.exit(1);
         };
@@ -133,9 +166,15 @@ export class Agent {
         this.bot.once('end', (reason) => onDisconnect('Disconnected', reason));
         this.bot.on('error', (err) => {
             if (String(err).includes('Duplicate') || String(err).includes('ECONNREFUSED')) {
-                 onDisconnect('Error', err);
+                onDisconnect('Error', err);
             } else {
-                 log(this.name, `[LoginGuard] Connection Error: ${String(err)}`);
+                log(this.name, `[LoginGuard] Connection Error: ${String(err)}`);
+                this.transcript?.record('connection.error', {
+                    message: err?.message ?? String(err),
+                    code: err?.code,
+                    stack: err?.stack,
+                    last_pos: this.bot?.entity?.position ?? null,
+                }, 'agent', { stage: 'connection' });
             }
         });
 
@@ -143,7 +182,7 @@ export class Agent {
 
         this.bot.on('login', () => {
             console.log(this.name, 'logged in!');
-            this.transcript?.record('agent.login', {}, 'agent');
+            this.transcript?.record('agent.login', {}, 'agent', { stage: 'connection' });
             serverProxy.login();
             
             // Set skin for profile, requires Fabric Tailor. (https://modrinth.com/mod/fabrictailor)
@@ -173,7 +212,7 @@ export class Agent {
                     load_mem,
                     init_message,
                     count_id
-                }, 'agent');
+                }, 'agent', { stage: 'system' });
                 this.clearBotLogs();
 
                 await this._initializeWorldMemory(save_data);
@@ -205,7 +244,7 @@ export class Agent {
 
     async _initializeWorldMemory(save_data = null) {
         if (settings.load_world_memory === false) {
-            this.transcript?.record('world_memory.disabled', {}, 'world_memory');
+            this.transcript?.record('world_memory.disabled', {}, 'world_memory', { stage: 'memory' });
             return;
         }
         this.world_identity = await resolveWorldIdentity(this);
@@ -215,7 +254,7 @@ export class Agent {
         await this._syncJourneyMapOnStart();
         const confidence = this.world_identity?.confidence;
         if (confidence === 'low' && settings.warn_on_low_confidence_world_id !== false) {
-            this.openChat(`World memory is using a low-confidence world id (${this.world_identity.source}). Set world_id in settings to make saved places/storage safer across server moves.`);
+            this.openChat(`World memory is temporary because only a low-confidence world id was available (${this.world_identity.source}). Set world_id in settings to persist saved places/storage safely.`);
         } else if (confidence === 'temporary') {
             this.openChat('I could not determine a durable world id, so map/storage memory is temporary for this session. Set world_id in settings to persist it safely.');
         }
@@ -225,32 +264,36 @@ export class Agent {
         if (settings.auto_sync_journeymap_on_start !== true) {
             this.transcript?.record('journeymap.startup_sync.skipped', {
                 enabled: false,
-            }, 'journeymap');
+            }, 'journeymap', { stage: 'memory' });
             return;
         }
 
         this.transcript?.record('journeymap.startup_sync.start', {
             bridge_url: settings.journeymap_bridge_url,
+            waypoints_path: settings.journeymap_waypoints_path || settings.journeymap_data_path || null,
             world_id: this.world_identity?.world_id,
-        }, 'journeymap');
+        }, 'journeymap', { stage: 'memory' });
         try {
-            const rawWaypoints = await fetchBridgeWaypoints();
-            const stats = mergeJourneyMapWaypoints(this.memory_bank, rawWaypoints, {
-                source: 'journeymap_bridge_startup',
+            const fetched = await fetchJourneyMapWaypoints();
+            const stats = mergeJourneyMapWaypoints(this.memory_bank, fetched.waypoints, {
+                source: `${fetched.source}_startup`,
             });
             if (this.memory_bank?.isDirty?.()) {
                 saveWorldMemory(this);
             }
             this.transcript?.record('journeymap.startup_sync.success', {
                 ...stats,
+                source: fetched.source,
+                sources: fetched.sources,
                 world_id: this.world_identity?.world_id,
-            }, 'journeymap');
+            }, 'journeymap', { stage: 'memory' });
         } catch (error) {
             this.transcript?.record('journeymap.startup_sync.failure', {
                 error: error?.message || String(error),
+                bridge_error: error?.bridgeError?.message,
                 world_id: this.world_identity?.world_id,
-            }, 'journeymap');
-            this.openChat('JourneyMap startup sync is enabled, but the bridge is unavailable. Existing world memory still loaded; use !syncJourneyMap later or paste a JourneyMap location.');
+            }, 'journeymap', { stage: 'memory' });
+            this.openChat('JourneyMap startup sync is enabled, but sync is unavailable. Existing world memory still loaded; configure journeymap_waypoints_path, use !syncJourneyMap later, or paste a JourneyMap location.');
         }
     }
 
@@ -304,7 +347,7 @@ export class Agent {
                 this.transcript?.record('message.inbound.raw', {
                     source: username,
                     message
-                }, 'agent');
+                }, 'agent', { stage: 'inbound' });
 
                 if (convoManager.isOtherAgent(username)) {
                     console.warn('received whisper from other bot??')
@@ -315,8 +358,8 @@ export class Agent {
                         source: username,
                         original: message,
                         message: translation
-                    }, 'agent');
-                    this.handleMessage(username, translation);
+                    }, 'agent', { stage: 'inbound' });
+                    this._queueHandleMessage(username, translation);
                 }
             } catch (error) {
                 console.error('Error handling message:', error);
@@ -398,16 +441,39 @@ export class Agent {
     }
 
     async handleMessage(source, message, max_responses=null) {
+        if (!this._messageQueue) {
+            this._messageQueue = Promise.resolve();
+        }
+        const run = () => this._handleMessage(source, message, max_responses);
+        const next = this._messageQueue.then(run, run);
+        this._messageQueue = next.catch(() => {});
+        return next;
+    }
+
+    _queueHandleMessage(source, message, max_responses=null) {
+        void this.handleMessage(source, message, max_responses).catch(error => {
+            console.error('Queued handleMessage failed:', error?.message || error);
+            this.transcript?.record?.('message.handle.unhandled_error', {
+                source,
+                error: error?.message || String(error),
+            }, 'agent', { stage: 'inbound' });
+        });
+    }
+
+    async _handleMessage(source, message, max_responses=null) {
         await this.checkTaskDone();
         if (!source || !message) {
             console.warn('Received empty message from', source);
             return false;
         }
+        const traceId = randomUUID();
+        this.transcript?.setTraceContext?.(traceId);
+        try {
         this.transcript?.record('message.handle.start', {
             source,
             message,
             max_responses
-        }, 'agent');
+        }, 'agent', { stage: 'inbound' });
 
         let used_command = false;
         const self_prompt = source === 'system' || source === this.name;
@@ -421,13 +487,18 @@ export class Agent {
         if (!self_prompt && !from_other_bot) { // from user, check for forced commands
             const user_command_name = containsCommand(message);
             if (user_command_name) {
-                if (!commandExists(user_command_name)) {
+                if (!commandExists(user_command_name, this)) {
                     noteCommandResult(this, user_command_name, normalizeCommandResult(`Command ${user_command_name} does not exist.`, {
                         commandName: user_command_name,
                         code: 'ERR_COMMAND_MISSING',
                         ok: false
                     }));
                     this.routeResponse(source, `Command '${user_command_name}' does not exist.`);
+                    this.transcript?.record('message.handle.end', {
+                        source,
+                        used_command: false,
+                        early_exit: 'missing_forced_command'
+                    }, 'agent', { stage: 'inbound' });
                     return false;
                 }
                 this.routeResponse(source, `*${source} used ${user_command_name.substring(1)}*`);
@@ -438,7 +509,8 @@ export class Agent {
                 }
                 const metadata = this._commandMetadata(message);
                 noteCommandStart(this, user_command_name, metadata);
-                let execute_res = await executeCommand(this, message);
+                const forcedCommand = extractCommandMessages(message).find(command => command.commandName === user_command_name);
+                let execute_res = await executeCommand(this, forcedCommand?.commandText || message);
                 noteCommandResult(this, user_command_name, execute_res, metadata);
                 if (execute_res && execute_res.code !== 'ERR_EMPTY_RESULT') 
                     this.routeResponse(source, renderCommandResult(execute_res));
@@ -449,7 +521,7 @@ export class Agent {
                     source,
                     used_command: true,
                     forced_command: user_command_name
-                }, 'agent');
+                }, 'agent', { stage: 'inbound' });
                 return true;
             }
         }
@@ -465,7 +537,10 @@ export class Agent {
             message,
             self_prompt,
             from_other_bot
-        }, 'agent');
+        }, 'agent', { stage: 'inbound' });
+        if (!self_prompt && !from_other_bot) {
+            noteUserIntent(this, message);
+        }
 
         const checkInterrupt = () => this.self_prompter.shouldInterrupt(self_prompt) || this.shut_up || convoManager.responseScheduledFor(source);
         
@@ -481,7 +556,7 @@ export class Agent {
 
         // Handle other user messages
         await this.history.add(source, message);
-        this.history.save();
+        await this.history.save();
 
         if (!self_prompt && this.self_prompter.isActive()) // message is from user during self-prompting
             max_responses = 1; // force only respond to this message, then let self-prompting take over
@@ -496,7 +571,7 @@ export class Agent {
                 console.warn('no response')
                 this.transcript?.record('message.no_response', {
                     source
-                }, 'agent');
+                }, 'agent', { stage: 'model' });
                 break; // empty response ends loop
             }
 
@@ -510,7 +585,7 @@ export class Agent {
                     const command_message = command_messages[j];
                     const command_name = command_message.commandName;
                     
-                    if (!commandExists(command_name)) {
+                    if (!commandExists(command_name, this)) {
                         this.history.add('system', renderCommandResult(normalizeCommandResult(`Command ${command_name} does not exist.`, {
                             commandName: command_name,
                             code: 'ERR_COMMAND_MISSING',
@@ -525,7 +600,7 @@ export class Agent {
                         this.transcript?.record('command.hallucinated', {
                             command_name,
                             response: res
-                        }, 'agent');
+                        }, 'agent', { stage: 'command' });
                         continue;
                     }
 
@@ -582,14 +657,17 @@ export class Agent {
                 break;
             }
             
-            this.history.save();
+            await this.history.save();
         }
 
         this.transcript?.record('message.handle.end', {
             source,
             used_command
-        }, 'agent');
+        }, 'agent', { stage: 'inbound' });
         return used_command;
+        } finally {
+            this.transcript?.clearTraceContext?.();
+        }
     }
 
     async routeResponse(to_player, message) {
@@ -636,7 +714,7 @@ export class Agent {
                 recipients: settings.only_chat_with,
                 chat_ingame: false,
                 speak: false
-            }, 'agent');
+            }, 'agent', { stage: 'outbound' });
         }
         else {
             if (settings.speak) {
@@ -649,7 +727,7 @@ export class Agent {
                 translated: message,
                 chat_ingame: settings.chat_ingame,
                 speak: settings.speak
-            }, 'agent');
+            }, 'agent', { stage: 'outbound' });
         }
     }
 
@@ -676,10 +754,73 @@ export class Agent {
             }
             prev_health = this.bot.health;
         });
-        // Logging callbacks
-        this.bot.on('error' , (err) => {
-            console.error('Error event!', err);
+        const pathApproxDist = () => {
+            const goal = this.bot.pathfinder?.goal;
+            if (!goal || typeof goal.x !== 'number')
+                return null;
+            if (!this.bot.entity?.position)
+                return null;
+            return this.bot.entity.position.distanceTo({
+                x: goal.x,
+                y: goal.y,
+                z: goal.z,
+            });
+        };
+
+        this.bot.on('path_update', (results) => {
+            this.transcript?.record('pathfinder.path_update', {
+                status: results?.status ?? null,
+                path_length: results?.path?.length ?? 0,
+                compute_time_ms: results?.time ?? results?.milliseconds ?? undefined,
+            }, 'agent', { stage: 'pathfinder', debug: true });
+            const st = results?.status;
+            if (st === 'noPath' || st === 'timeout') {
+                this.transcript?.record(st === 'noPath' ? 'pathfinder.no_path' : 'pathfinder.timeout', {
+                    status: st,
+                    path_length: results?.path?.length ?? 0,
+                }, 'agent', { stage: 'pathfinder' });
+            }
         });
+        this.bot.on('goal_reached', () => {
+            this.transcript?.record('pathfinder.goal_reached', {
+                dist_approx: pathApproxDist(),
+            }, 'agent', { stage: 'pathfinder' });
+        });
+        this.bot.on('path_reset', (reason) => {
+            this.transcript?.record('pathfinder.path_reset', {
+                reason: reason != null ? String(reason) : null,
+            }, 'agent', { stage: 'pathfinder', debug: true });
+        });
+        let lastPfProgEmit = 0;
+        const pfProgEveryMs = 2000;
+        setInterval(() => {
+            try {
+                if (!this.bot.pathfinder?.goal || !this.actions.executing)
+                    return;
+                const now = Date.now();
+                if (now - lastPfProgEmit < pfProgEveryMs)
+                    return;
+                lastPfProgEmit = now;
+                const p = this.bot.entity?.position;
+                this.transcript?.record('pathfinder.progress', {
+                    pos: p
+                        ? { x: p.x, y: p.y, z: p.z }
+                        : null,
+                    dist_remaining: pathApproxDist(),
+                    moving: !!(this.bot.pathfinder.isMoving && this.bot.pathfinder.isMoving()),
+                }, 'agent', { stage: 'pathfinder', debug: true });
+            } catch (_) { /* noop */ }
+        }, pfProgEveryMs).unref?.();
+
+        setInterval(() => {
+            try {
+                const ping = this.bot.players[this.bot.username]?.ping;
+                if (ping != null) {
+                    this.transcript?.record('connection.latency', { rtt_ms: ping }, 'agent', { stage: 'connection', debug: true });
+                }
+            } catch (_) { /* noop */ }
+        }, 45000).unref?.();
+
         // Use connection handler for runtime disconnects
         this.bot.on('end', (reason) => {
             if (!this._disconnectHandled) {
@@ -707,7 +848,7 @@ export class Agent {
                     death_pos_text = `x: ${death_pos.x.toFixed(2)}, y: ${death_pos.y.toFixed(2)}, z: ${death_pos.z.toFixed(2)}`;
                 }
                 let dimention = this.bot.game.dimension;
-                this.handleMessage('system', `You died at position ${death_pos_text || "unknown"} in the ${dimention} dimension with the final message: '${message}'. Your place of death is saved as 'last_death_position' if you want to return. Previous actions were stopped and you have respawned.`);
+                this._queueHandleMessage('system', `You died at position ${death_pos_text || "unknown"} in the ${dimention} dimension with the final message: '${message}'. Your place of death is saved as 'last_death_position' if you want to return. Previous actions were stopped and you have respawned.`);
             }
         });
         this.bot.on('idle', () => {
@@ -754,13 +895,21 @@ export class Agent {
     
 
     cleanKill(msg='Killing agent process...', code=1) {
+        // #region agent log
+        fetch('http://127.0.0.1:7484/ingest/810ac7de-41e1-41cb-943b-25180aa7a274',{method:'POST',headers:{'Content-Type':'application/json','X-Debug-Session-Id':'99e7db'},body:JSON.stringify({sessionId:'99e7db',location:'agent.js:cleanKill',message:'cleanKill invoked',data:{msg:String(msg),code,stackPreview:(new Error('cleanKill trace')).stack?.split('\n').slice(0,10).join('|')},timestamp:Date.now(),hypothesisId:'H3'})}).catch(()=>{});
+        try {
+            appendFileSync(path.join(process.cwd(), 'debug-99e7db.log'), `${JSON.stringify({sessionId:'99e7db',location:'agent.js:cleanKill',message:'cleanKill',data:{msg:String(msg),code,stackPreview:(new Error('cleanKill trace')).stack?.split('\n').slice(0,10).join('|')},timestamp:Date.now(),hypothesisId:'H3'})}\n`);
+        } catch {
+            /* ignore */
+        }
+        // #endregion
         this.history.add('system', msg);
         this.bot.chat(code > 1 ? 'Restarting.': 'Exiting.');
         this.history.save();
         this.transcript?.record('agent.clean_kill', {
             msg,
             code
-        }, 'agent');
+        }, 'agent', { stage: 'system' });
         this.transcript?.flushSync?.();
         process.exit(code);
     }
@@ -772,7 +921,7 @@ export class Agent {
                 await this.history.save();
                 // await new Promise(resolve => setTimeout(resolve, 3000)); // Wait 3 second for save to complete
                 console.log('Task finished:', res.message);
-                this.transcript?.record('task.finished', res, 'agent');
+                this.transcript?.record('task.finished', res, 'agent', { stage: 'system' });
                 this.killAll();
             }
         }

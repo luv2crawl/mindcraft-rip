@@ -36,6 +36,11 @@ readable diagnostics when something goes wrong.
 - Persisted typed memory through `History.save/load` in `bots/{bot}/memory.json`.
 - Added a dirty flag so direct user commands that mutate structured memory can force a save before returning.
 - Added namespaces for `places`, `journeymap.waypoints`, `routes`, `storage`, `observations`, and `pending`.
+- Durable world memory now requires a high- or medium-confidence world identity.
+  Low-confidence protocol/server fallbacks remain session-local until
+  `settings.world_id` or another stronger identity source is configured.
+- World-memory merge now preserves existing timestamp-less records on key
+  collisions instead of allowing stale in-memory data to silently overwrite them.
 - Added focused docs in `docs/situational-memory.md`.
 
 ## JourneyMap Integration
@@ -64,6 +69,22 @@ readable diagnostics when something goes wrong.
 - Blocked routes save `pending.route_issue` and stop before digging.
 - `!continueRoute(name, "allow_dig_once")` only permits digging for the current blocked segment and then expires.
 - Route failure output uses structured reasons such as `route_blocked`, `interrupted`, and `dimension_mismatch`.
+
+## Runtime Coordination And Transcripts
+
+- Serialized `Agent.handleMessage()` per agent so overlapping chat/system/self
+  prompts do not run concurrent model/command loops against shared history and
+  action state.
+- The pre-prompt history save is awaited, so pending summarization work is
+  flushed before prompt construction.
+- Fire-and-forget message paths now route through a queued helper that catches
+  and logs failures.
+- Transcript logging keeps display names separate from sanitized directory
+  names, preventing profile names from escaping `bots/`.
+- Transcript flush failures keep queued records for a later retry instead of
+  dropping them.
+- Corrupt task ledger files are backed up to `.corrupt-<timestamp>` before a
+  fresh ledger is written.
 
 ## Event-Triggered Vision
 
@@ -134,13 +155,24 @@ The chest contains 54 stacks across 27 item types:
 - The full assistant response is preserved in history so emitted plans and trailing commands are observable.
 - Invalid or hallucinated commands add an `ERR_COMMAND_MISSING` system result and the queue continues to any later extracted command.
 - Command returns are normalized and rendered with stable prefixes such as `OK`, `ERR_BAD_ARGS`, `ERR_COMMAND_MISSING`, `ERR_NO_PATH`, `ERR_INTERRUPTED`, and `ERR_PARTIAL`.
-- Transcript command results are capped to avoid unbounded logs, while prompt-facing command output remains the command renderer's responsibility.
+- Transcript command results are capped to avoid unbounded logs, and
+  prompt-facing command output is capped before it is added back to history.
+- Direct command parsing now requires the whole string to be a command, while
+  model responses still use command-span extraction for commands embedded in
+  prose.
+- Optional trailing command parameters now use documented defaults; for example
+  `!getCraftingPlan("torch")` defaults quantity to `1`.
 - Updated conversation prompts and command docs to tell the model to use at most one command per response and wait for command results before issuing the next command.
 
 ## Planning And Response Caps
 
 - Added a DEPS-style `promptNewActionPlan` step before `!newAction` code generation.
 - The planner selects an immediate sub-goal and injects that plan as binding context for `promptCoding`.
+- `!newAction` loads execution templates synchronously and always restores the
+  `unstuck` mode to its prior pause state.
+- Generated custom code rejects loop syntax (`for`, `while`, and `do/while`)
+  before staging. This is a reliability guard against synchronous hangs, not a
+  full security sandbox.
 - Added `resolveMaxResponses()` so normal user messages stay capped to one response, while self/system prompts with active objective frames can use configured `max_commands`.
 
 ## Tooling And Tests
@@ -149,11 +181,15 @@ The chest contains 54 stacks across 27 item types:
 - Added tests for storage lookup, last-known chest fallback, mining planning helpers, objective result formatting, and aggregated chest content formatting.
 - Added tests for memory migration and persistence, JourneyMap location parsing, route issue records, breadcrumb thresholds, and storage index search.
 - Added tests for command extraction and multi-command `Agent.handleMessage()` responses.
+- Added regressions for message serialization, command-output caps, optional
+  command defaults, transcript path safety, transcript retry behavior, task
+  ledger corrupt-file backups, mode isolation, and generated-code loop
+  rejection.
 - Current verification after these changes:
 
 ```text
 npm test
-107 tests passed
+215 tests passed
 ```
 
 ## Operational Notes

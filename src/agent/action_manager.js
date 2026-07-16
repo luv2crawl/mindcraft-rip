@@ -1,3 +1,6 @@
+import settings from './settings.js';
+import assert from 'node:assert/strict';
+
 export class ActionManager {
     constructor(agent) {
         this.agent = agent;
@@ -9,10 +12,23 @@ export class ActionManager {
         this.resume_name = '';
         this.last_action_time = 0;
         this.recent_action_counter = 0;
+        this._stuckPoll = null;
+        this._stuckEmittedForAction = false;
     }
 
-    async resumeAction(actionFn, timeout) {
-        return this._executeResume(actionFn, timeout);
+    _clearStuckWatch() {
+        if (this._stuckPoll) {
+            clearInterval(this._stuckPoll);
+            this._stuckPoll = null;
+        }
+        this._stuckEmittedForAction = false;
+    }
+
+    async resumeAction(actionLabel = null, actionFn = null, timeout = 10) {
+        if (typeof actionLabel === 'function') {
+            throw new Error('resumeAction(actionFn, timeout) is no longer supported; pass actionLabel, actionFn, timeout.');
+        }
+        return this._executeResume(actionLabel, actionFn, timeout);
     }
 
     async runAction(actionLabel, actionFn, { timeout, resume = false } = {}) {
@@ -86,7 +102,7 @@ export class ActionManager {
             this.agent.transcript?.record('action.start', {
                 actionLabel,
                 timeout
-            }, 'action_manager');
+            }, 'action_manager', { stage: 'action' });
 
             // await current action to finish (executing=false), with 10 seconds timeout
             // also tell agent.bot to stop various actions
@@ -106,6 +122,67 @@ export class ActionManager {
             if (timeout > 0) {
                 TIMEOUT = this._startTimeout(timeout);
             }
+
+            const stuckPollMs = settings.action_stuck_poll_ms ?? 10000;
+            const stuckAfterMs = settings.action_stuck_after_ms ?? 45000;
+            const bot = this.agent.bot;
+            let lastMovedAt = Date.now();
+            let anchor = bot.entity?.position
+                ? { x: bot.entity.position.x, y: bot.entity.position.y, z: bot.entity.position.z }
+                : null;
+            const invFingerprint = () => (bot.inventory?.items?.() || [])
+                .map(it => `${it.name}:${it.count}`)
+                .slice(0, 96)
+                .join(',');
+            let lastFp = invFingerprint();
+
+            this._clearStuckWatch();
+            this._stuckPoll = setInterval(() => {
+                if (!this.executing || this._stuckEmittedForAction || !anchor)
+                    return;
+                const p = bot.entity?.position;
+                if (!p)
+                    return;
+                const moved = Math.hypot(p.x - anchor.x, p.y - anchor.y, p.z - anchor.z) > 0.25;
+                const fpNow = invFingerprint();
+                const invChanged = fpNow !== lastFp;
+                if (moved || invChanged) {
+                    lastMovedAt = Date.now();
+                    anchor = { x: p.x, y: p.y, z: p.z };
+                    lastFp = fpNow;
+                }
+                const since_ms = Date.now() - lastMovedAt;
+                if (since_ms < stuckAfterMs)
+                    return;
+                this._stuckEmittedForAction = true;
+                const sm = this.agent.session_memory || {};
+                this.agent.task_ledger?.block?.('action_stuck', {
+                    phase: this.agent.task_ledger.current?.phase || 'ACTION',
+                    nextAction: '!taskStatus',
+                    evidence: {
+                        ...(this.agent.task_ledger.current?.evidence || {}),
+                        stuck: {
+                            since_ms,
+                            threshold_ms: stuckAfterMs,
+                            last_pos: anchor,
+                            actionLabel,
+                        },
+                    },
+                });
+                if (settings.task_status_chat_enabled !== false) {
+                    this.agent.openChat?.(`Blocked: current task appears stuck during ${actionLabel}. Use !taskStatus for details.`);
+                }
+                this.agent.transcript?.record('action.stuck', {
+                    since_ms,
+                    threshold_ms: stuckAfterMs,
+                    last_pos: anchor,
+                    last_inv_fingerprint_preview: `${fpNow.length}:${fpNow.slice(0, 140)}`,
+                    current_command_name: sm.currentCommandName ?? sm.lastCommand ?? null,
+                    current_action_label: actionLabel,
+                }, 'action_manager', { stage: 'action' });
+            }, stuckPollMs);
+            if (typeof this._stuckPoll?.unref === 'function')
+                this._stuckPoll.unref();
 
             // start the action
             await actionFn();
@@ -135,7 +212,7 @@ export class ActionManager {
                 interrupted,
                 timedout,
                 output
-            }, 'action_manager');
+            }, 'action_manager', { stage: 'action' });
             return { success: true, message: output, interrupted, timedout };
         } catch (err) {
             this.executing = false;
@@ -153,7 +230,7 @@ export class ActionManager {
                     interrupted: true,
                     timedout: false,
                     output: ''
-                }, 'action_manager');
+                }, 'action_manager', { stage: 'action' });
                 return { success: false, message: '', interrupted: true, timedout: false };
             }
             console.error("Code execution triggered catch:", err);
@@ -179,8 +256,10 @@ export class ActionManager {
                 message,
                 interrupted,
                 timedout
-            }, 'action_manager');
+            }, 'action_manager', { stage: 'action' });
             return { success: false, message, interrupted, timedout };
+        } finally {
+            this._clearStuckWatch();
         }
     }
 
@@ -190,7 +269,7 @@ export class ActionManager {
         let output = bot.output;
         const MAX_OUT = 500;
         if (output.length > MAX_OUT) {
-            output = `Action output is very long (${output.length} chars) and has been shortened.\n
+            output = `Action output:\nOutput is very long (${output.length} chars) and has been shortened.\n
           First outputs:\n${output.substring(0, MAX_OUT / 2)}\n...skipping many lines.\nFinal outputs:\n ${output.substring(output.length - MAX_OUT / 2)}`;
         }
         else {
@@ -207,7 +286,7 @@ export class ActionManager {
             this.agent.transcript?.record('action.timeout', {
                 actionLabel: this.currentActionLabel,
                 timeout_mins: TIMEOUT_MINS
-            }, 'action_manager');
+            }, 'action_manager', { stage: 'action' });
             this.agent.history.add('system', `Code execution timed out after ${TIMEOUT_MINS} minutes. Attempting force stop.`);
             await this.stop(); // last attempt to stop
         }, TIMEOUT_MINS * 60 * 1000);

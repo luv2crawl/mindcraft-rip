@@ -170,6 +170,25 @@ describe('Prompter replacement caching', () => {
         assert.deepEqual(prompter.agent.session_memory.lastSurfacedMemoryLabels.some(label => label.includes('home_chest')), true);
     });
 
+    test('task ledger summary is included in structured memory', async () => {
+        const prompter = Object.create(Prompter.prototype);
+        prompter.agent = {
+            name: 'bot',
+            history: { memory: '' },
+            memory_bank: new MemoryBank(),
+            task_ledger: {
+                summary() {
+                    return 'Task: blocked/VERIFY mine 4 copper verified=0/4 blocker=mining_verification_failed next=!recoverDroppedItems';
+                },
+            },
+        };
+
+        const out = await prompter.replaceStrings('$STRUCTURED_MEMORY', []);
+
+        assert.match(out, /Task: blocked\/VERIFY mine 4 copper verified=0\/4/);
+        assert.match(out, /Structured memory:/);
+    });
+
     test('session memory is not part of saving_memory prompts', async () => {
         const prompter = Object.create(Prompter.prototype);
         Object.assign(prompter, {
@@ -264,5 +283,53 @@ describe('Prompter newAction planning', () => {
             entry.data.kind === 'coding' &&
             entry.data.model === 'code-model'
         ));
+    });
+});
+
+describe('Prompter conversation staleness', () => {
+    test('uses a sequence id instead of same-millisecond timestamps', async () => {
+        const prompter = Object.create(Prompter.prototype);
+        let releaseFirst;
+        let markFirstStarted;
+        const firstStarted = new Promise(resolve => {
+            markFirstStarted = resolve;
+        });
+        let calls = 0;
+        Object.assign(prompter, {
+            agent: {
+                name: 'bot',
+                transcript: { record() {} },
+            },
+            profile: {
+                conversing: 'Hello $NAME'
+            },
+            convo_examples: null,
+            prompt_sequence: 0,
+            chat_model: {
+                model_name: 'test',
+                async sendRequest() {
+                    calls += 1;
+                    if (calls === 1) {
+                        markFirstStarted();
+                        await new Promise(resolve => {
+                            releaseFirst = resolve;
+                        });
+                        return 'old response';
+                    }
+                    return 'new response';
+                }
+            },
+            async checkCooldown() {},
+            async _saveLog() {}
+        });
+
+        const first = prompter.promptConvo([]);
+        await firstStarted;
+        const second = prompter.promptConvo([]);
+        await new Promise(resolve => setTimeout(resolve, 10));
+        releaseFirst();
+
+        assert.equal(await second, 'new response');
+        assert.equal(await first, '');
     });
 });

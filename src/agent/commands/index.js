@@ -9,27 +9,30 @@ const commandMap = {};
 for (let command of commandList) {
     commandMap[command.name] = command;
 }
+const unblockableCommands = new Set(['!stop', '!stats', '!inventory', '!goal']);
 
 export function getCommand(name) {
     return commandMap[name];
 }
 
 export function blacklistCommands(commands) {
-    const unblockable = ['!stop', '!stats', '!inventory', '!goal'];
+    const blocked = [];
     for (let command_name of commands) {
-        if (unblockable.includes(command_name)){
+        if (unblockableCommands.has(command_name)){
             console.warn(`Command ${command_name} is unblockable`);
             continue;
         }
-        delete commandMap[command_name];
-        delete commandList.find(command => command.name === command_name);
+        blocked.push(command_name);
     }
+    return blocked;
 }
 
 const commandRegex = /!(\w+)(?:\(((?:-?\d+(?:\.\d+)?|true|false|"[^"]*")(?:\s*,\s*(?:-?\d+(?:\.\d+)?|true|false|"[^"]*"))*)\))?/
+const anchoredCommandRegex = new RegExp(`^${commandRegex.source}$`);
 const commandGlobalRegex = new RegExp(commandRegex.source, 'g');
 const argRegex = /-?\d+(?:\.\d+)?|true|false|"[^"]*"/g;
 const MAX_TRANSCRIPT_RESULT_CHARS = 4000;
+export const MAX_COMMAND_RESULT_CHARS = 4000;
 const COMMAND_RESULT_CODES = {
     OK: 'OK',
     BAD_FORMAT: 'ERR_BAD_FORMAT',
@@ -57,10 +60,17 @@ export function extractCommandMessages(message) {
     return commands;
 }
 
-export function commandExists(commandName) {
+export function isCommandBlocked(commandName, agent = null) {
     if (!commandName.startsWith("!"))
         commandName = "!" + commandName;
-    return commandMap[commandName] !== undefined;
+    if (unblockableCommands.has(commandName)) return false;
+    return agent?.blocked_actions?.includes(commandName) ?? false;
+}
+
+export function commandExists(commandName, agent = null) {
+    if (!commandName.startsWith("!"))
+        commandName = "!" + commandName;
+    return commandMap[commandName] !== undefined && !isCommandBlocked(commandName, agent);
 }
 
 /**
@@ -116,7 +126,7 @@ function checkInInterval(number, lowerBound, upperBound, endpointType) {
  * @returns {string | Object}
  */
 export function parseCommandMessage(message) {
-    const commandMatch = message.match(commandRegex);
+    const commandMatch = String(message || '').trim().match(anchoredCommandRegex);
     if (!commandMatch) return `Command is incorrectly formatted`;
 
     const commandName = "!"+commandMatch[1];
@@ -131,8 +141,13 @@ export function parseCommandMessage(message) {
     const params = commandParams(command);
     const paramNames = commandParamNames(command);
     
-    if (args.length !== params.length)
-        return `Command ${command.name} was given ${args.length} args, but requires ${params.length} args.`;
+    const requiredCount = params.filter(param => !param.optional).length;
+    if (args.length < requiredCount || args.length > params.length) {
+        const requirement = requiredCount === params.length
+            ? `${params.length} args`
+            : `${requiredCount}-${params.length} args`;
+        return `Command ${command.name} was given ${args.length} args, but requires ${requirement}.`;
+    }
 
     
     for (let i = 0; i < args.length; i++) {
@@ -189,6 +204,13 @@ export function parseCommandMessage(message) {
             if(getBlockId(arg) == null && getItemId(arg) == null) return  `Invalid block or item type: ${arg}.`
         }
         args[i] = arg;
+    }
+
+    for (let i = args.length; i < params.length; i++) {
+        const param = params[i];
+        if (!param.optional)
+            return `Command ${command.name} was given ${args.length} args, but requires ${requiredCount} args.`;
+        args[i] = param.default;
     }
     
     return { commandName, args };
@@ -325,13 +347,24 @@ export function normalizeCommandResult(result, context = {}) {
 export function renderCommandResult(result) {
     const normalized = normalizeCommandResult(result);
     const raw = String(normalized.raw || '').trim();
+    const truncate = (text) => {
+        if (text.length <= MAX_COMMAND_RESULT_CHARS) return text;
+        const head = Math.floor(MAX_COMMAND_RESULT_CHARS / 2);
+        const tail = MAX_COMMAND_RESULT_CHARS - head;
+        return [
+            text.slice(0, head),
+            `\n...(command result truncated from ${text.length} chars to ${MAX_COMMAND_RESULT_CHARS})...\n`,
+            text.slice(text.length - tail)
+        ].join('');
+    };
 
     if (raw) {
-        if (/^(OK|FAILED):/i.test(raw)) {
-            return raw.replace(/^(OK|FAILED):\s*([^\n]+)/i, `${normalized.code}: $2`);
+        const capped = truncate(raw);
+        if (/^(OK|FAILED):/i.test(capped)) {
+            return capped.replace(/^(OK|FAILED):\s*([^\n]+)/i, `${normalized.code}: $2`);
         }
-        if (raw.startsWith(normalized.code + ':')) return raw;
-        return `${normalized.code}: ${raw}`;
+        if (capped.startsWith(normalized.code + ':')) return capped;
+        return `${normalized.code}: ${capped}`;
     }
 
     return `${normalized.code}: ${normalized.summary || 'Command returned no result.'}`;
@@ -344,19 +377,37 @@ export async function executeCommand(agent, message) {
         agent.transcript?.record('command.parse.failure', {
             message,
             error: normalized
-        }, 'commands');
+        }, 'commands', { stage: 'command' });
         return normalized; //The command was incorrectly formatted or an invalid input was given.
     }
     else {
         console.log('parsed command:', parsed);
-        agent.transcript?.record('command.parsed', parsed, 'commands');
+        agent.transcript?.record('command.parsed', parsed, 'commands', { stage: 'command' });
+        if (isCommandBlocked(parsed.commandName, agent)) {
+            const normalized = normalizeCommandResult(`Command ${parsed.commandName} is blocked by settings.`, {
+                commandName: parsed.commandName,
+                code: COMMAND_RESULT_CODES.COMMAND_MISSING,
+                ok: false
+            });
+            agent.transcript?.record('command.validation.failure', {
+                commandName: parsed.commandName,
+                reason: 'blocked',
+                result: normalized
+            }, 'commands', { stage: 'command' });
+            return normalized;
+        }
         const command = getCommand(parsed.commandName);
         let numArgs = 0;
         if (parsed.args) {
             numArgs = parsed.args.length;
         }
-        if (numArgs !== numParams(command)) {
-            const normalized = normalizeCommandResult(`Command ${command.name} was given ${numArgs} args, but requires ${numParams(command)} args.`, {
+        const params = commandParams(command);
+        const requiredCount = params.filter(param => !param.optional).length;
+        if (numArgs < requiredCount || numArgs > params.length) {
+            const requirement = requiredCount === params.length
+                ? `${params.length} args`
+                : `${requiredCount}-${params.length} args`;
+            const normalized = normalizeCommandResult(`Command ${command.name} was given ${numArgs} args, but requires ${requirement}.`, {
                 commandName: parsed.commandName,
                 code: COMMAND_RESULT_CODES.BAD_ARGS,
                 ok: false
@@ -364,14 +415,14 @@ export async function executeCommand(agent, message) {
             agent.transcript?.record('command.validation.failure', {
                 commandName: parsed.commandName,
                 given: numArgs,
-                required: numParams(command),
+                required: requirement,
                 result: normalized
-            }, 'commands');
+            }, 'commands', { stage: 'command' });
             return normalized;
         }
         else {
             const start = Date.now();
-            agent.transcript?.record('command.start', parsed, 'commands');
+            agent.transcript?.record('command.start', parsed, 'commands', { stage: 'command' });
             try {
                 const result = await command.perform(agent, ...parsed.args);
                 const normalized = normalizeCommandResult(result, { commandName: parsed.commandName });
@@ -379,7 +430,7 @@ export async function executeCommand(agent, message) {
                     commandName: parsed.commandName,
                     duration_ms: Date.now() - start,
                     result: _truncateTranscriptValue(normalized)
-                }, 'commands');
+                }, 'commands', { stage: 'command' });
                 return normalized;
             } catch (error) {
                 const normalized = normalizeCommandResult(error?.message || String(error), {
@@ -392,7 +443,7 @@ export async function executeCommand(agent, message) {
                     duration_ms: Date.now() - start,
                     error: _truncateTranscriptValue(error),
                     result: _truncateTranscriptValue(normalized)
-                }, 'commands');
+                }, 'commands', { stage: 'command' });
                 return normalized;
             }
         }
@@ -430,7 +481,7 @@ export function getCommandDocs(agent) {
     Do not use codeblocks. Use double quotes for strings. Use at most one command in each response; wait for the command result before issuing the next command.
     Command results may start with stable codes like OK, ERR_NO_PATH, ERR_BAD_ARGS, ERR_COMMAND_MISSING, ERR_INTERRUPTED, or ERR_PARTIAL. Use these codes to choose recovery steps.\n`;
     for (let command of commandList) {
-        if (agent.blocked_actions.includes(command.name)) {
+        if (isCommandBlocked(command.name, agent)) {
             continue;
         }
         docs += command.name + ': ' + command.description + '\n';

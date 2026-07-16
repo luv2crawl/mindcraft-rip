@@ -1,6 +1,7 @@
 import OpenAIApi from 'openai';
 import { getKey } from '../utils/keys.js';
 import { strictFormat } from '../utils/text.js';
+import { notifyContextTruncateRetry, notifyModelResponseFallback } from './_model_transcript_helpers.js';
 
 // llama, mistral
 export class Novita {
@@ -44,9 +45,11 @@ export class Novita {
       catch (err) {
           if ((err.message == 'Context length exceeded' || err.code == 'context_length_exceeded') && turns.length > 1) {
               console.log('Context length exceeded, trying again with shorter context.');
-              return await sendRequest(turns.slice(1), systemMessage, stop_seq);
+              notifyContextTruncateRetry(this, turns.length - 1);
+              return await this.sendRequest(turns.slice(1), systemMessage, stop_seq);
           } else {
             console.log(err);
+            notifyModelResponseFallback(this, err);
               res = 'My brain disconnected, try again.';
           }
       }

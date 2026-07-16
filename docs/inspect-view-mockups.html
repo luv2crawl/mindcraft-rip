@@ -1,0 +1,1212 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mindcraft Inspect View Mockups</title>
+  <style>
+    :root {
+      --bg: #12141a;
+      --bg-elevated: #1a1d26;
+      --bg-muted: #242833;
+      --bg-soft: #191c24;
+      --border: #343948;
+      --text: #e6e8ef;
+      --text-muted: #9aa2ba;
+      --text-dim: #6f7890;
+      --accent: #5b8cff;
+      --accent-soft: rgba(91, 140, 255, 0.16);
+      --danger: #ff7979;
+      --danger-soft: rgba(232, 84, 84, 0.17);
+      --success: #62c873;
+      --success-soft: rgba(76, 175, 87, 0.18);
+      --warn: #e6b85c;
+      --warn-soft: rgba(224, 160, 32, 0.18);
+      --radius: 8px;
+      --mono: "Cascadia Code", Consolas, ui-monospace, monospace;
+      --sans: "Segoe UI", system-ui, -apple-system, sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      margin: 0;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      line-height: 1.45;
+    }
+
+    button, select, input {
+      font: inherit;
+      color: inherit;
+    }
+
+    .page {
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    .app-header {
+      flex: 0 0 auto;
+      padding: 20px 24px 0;
+      border-bottom: 1px solid var(--border);
+      background: #171a22;
+    }
+
+    .title-row {
+      display: flex;
+      align-items: center;
+      gap: 16px;
+      margin-bottom: 14px;
+    }
+
+    h1 {
+      margin: 0;
+      font-size: 1.5rem;
+      font-weight: 650;
+      letter-spacing: 0;
+    }
+
+    .status {
+      color: var(--success);
+      border: 1px solid #3f7349;
+      border-radius: 999px;
+      padding: 4px 12px;
+      font-size: 0.86rem;
+    }
+
+    .tabs {
+      display: flex;
+      gap: 4px;
+      margin-bottom: -1px;
+    }
+
+    .main-tab {
+      border: 1px solid transparent;
+      border-bottom: 0;
+      border-radius: var(--radius) var(--radius) 0 0;
+      background: transparent;
+      color: var(--text-muted);
+      padding: 10px 18px;
+    }
+
+    .main-tab.active {
+      color: var(--text);
+      background: var(--bg);
+      border-color: var(--border);
+    }
+
+    .intro {
+      padding: 20px 24px 10px;
+      max-width: 1200px;
+    }
+
+    .intro h2 {
+      margin: 0 0 6px;
+      font-size: 1.28rem;
+      font-weight: 650;
+    }
+
+    .intro p {
+      max-width: 920px;
+      margin: 0;
+      color: var(--text-muted);
+    }
+
+    .mockup-nav {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      display: flex;
+      gap: 8px;
+      padding: 12px 24px;
+      background: rgba(18, 20, 26, 0.92);
+      border-bottom: 1px solid var(--border);
+      backdrop-filter: blur(8px);
+      overflow-x: auto;
+    }
+
+    .mockup-nav a {
+      text-decoration: none;
+      color: var(--text);
+      background: var(--bg-muted);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 7px 11px;
+      white-space: nowrap;
+      font-size: 0.9rem;
+    }
+
+    .mockup {
+      padding: 22px 24px 34px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .mockup-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 18px;
+      align-items: end;
+      margin-bottom: 14px;
+    }
+
+    .mockup-title h3 {
+      margin: 0 0 4px;
+      font-size: 1.12rem;
+      font-weight: 650;
+    }
+
+    .mockup-title p {
+      margin: 0;
+      color: var(--text-muted);
+      max-width: 820px;
+    }
+
+    .score {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      justify-content: flex-end;
+      color: var(--text-muted);
+      font-size: 0.82rem;
+    }
+
+    .score span {
+      border: 1px solid var(--border);
+      border-radius: 999px;
+      padding: 3px 9px;
+      background: var(--bg-soft);
+    }
+
+    .frame {
+      height: min(760px, calc(100vh - 92px));
+      min-height: 620px;
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      overflow: hidden;
+      background: var(--bg);
+      box-shadow: 0 18px 50px rgba(0, 0, 0, 0.22);
+    }
+
+    .toolbar {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      min-height: 54px;
+      padding: 9px 12px;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .toolbar.compact {
+      min-height: 48px;
+      padding: 8px 10px;
+    }
+
+    .grow { flex: 1; }
+
+    .select,
+    .input,
+    .btn,
+    .icon-btn {
+      border: 1px solid var(--border);
+      background: var(--bg-muted);
+      border-radius: 6px;
+      min-height: 34px;
+    }
+
+    .select {
+      padding: 0 30px 0 10px;
+      min-width: 126px;
+    }
+
+    .input {
+      padding: 0 10px;
+      min-width: 220px;
+      color: var(--text-muted);
+    }
+
+    .btn {
+      padding: 0 12px;
+      color: var(--text);
+    }
+
+    .btn.primary {
+      background: var(--accent);
+      border-color: var(--accent);
+      color: white;
+    }
+
+    .icon-btn {
+      width: 34px;
+      display: inline-grid;
+      place-items: center;
+      color: var(--text-muted);
+    }
+
+    .pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      min-height: 24px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      border: 1px solid var(--border);
+      background: var(--bg-muted);
+      color: var(--text-muted);
+      font-size: 0.78rem;
+      white-space: nowrap;
+    }
+
+    .pill.error {
+      color: var(--danger);
+      border-color: rgba(255, 121, 121, 0.45);
+      background: var(--danger-soft);
+    }
+
+    .pill.good {
+      color: var(--success);
+      border-color: rgba(98, 200, 115, 0.42);
+      background: var(--success-soft);
+    }
+
+    .layout-a {
+      height: calc(100% - 54px);
+      display: grid;
+      grid-template-columns: 232px minmax(420px, 1fr) minmax(360px, 470px);
+      min-height: 0;
+    }
+
+    .layout-b {
+      height: calc(100% - 54px);
+      display: grid;
+      grid-template-columns: 270px minmax(0, 1fr);
+      min-height: 0;
+    }
+
+    .layout-c {
+      height: calc(100% - 54px);
+      display: grid;
+      grid-template-columns: 320px minmax(390px, 1fr) minmax(340px, 430px);
+      min-height: 0;
+    }
+
+    .layout-d {
+      height: calc(100% - 48px);
+      display: grid;
+      grid-template-columns: 64px minmax(0, 1fr) 390px;
+      min-height: 0;
+    }
+
+    .side {
+      min-height: 0;
+      overflow: auto;
+      border-right: 1px solid var(--border);
+      background: var(--bg-elevated);
+    }
+
+    .side-head {
+      position: sticky;
+      top: 0;
+      z-index: 2;
+      background: var(--bg-elevated);
+      border-bottom: 1px solid var(--border);
+      padding: 11px 12px;
+      font-size: 0.82rem;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .session {
+      width: 100%;
+      display: block;
+      text-align: left;
+      border: 0;
+      border-bottom: 1px solid var(--border);
+      background: transparent;
+      color: var(--text);
+      padding: 11px 12px;
+    }
+
+    .session.active {
+      background: rgba(91, 140, 255, 0.14);
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+
+    .session-name {
+      font-family: var(--mono);
+      font-size: 0.82rem;
+      margin-bottom: 7px;
+      word-break: break-all;
+    }
+
+    .session-meta {
+      display: flex;
+      gap: 6px;
+      align-items: center;
+      color: var(--text-muted);
+      font-size: 0.78rem;
+    }
+
+    .timeline {
+      min-height: 0;
+      overflow: auto;
+      background: var(--bg);
+    }
+
+    .timeline-head {
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      background: rgba(18, 20, 26, 0.96);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .timeline-head strong {
+      font-size: 0.95rem;
+    }
+
+    .turn {
+      border-bottom: 1px solid var(--border);
+      background: var(--bg);
+    }
+
+    .turn-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 12px 14px 8px;
+      color: var(--text-muted);
+      font-size: 0.86rem;
+    }
+
+    .event {
+      display: grid;
+      grid-template-columns: 88px minmax(0, 1fr) auto;
+      gap: 10px;
+      align-items: center;
+      min-height: 50px;
+      padding: 8px 14px;
+      border-top: 1px solid rgba(52, 57, 72, 0.55);
+    }
+
+    .event.selected {
+      background: rgba(91, 140, 255, 0.16);
+      box-shadow: inset 3px 0 0 var(--accent);
+    }
+
+    .event.fail {
+      background: linear-gradient(90deg, var(--danger-soft), transparent 36%);
+    }
+
+    .lane {
+      justify-self: start;
+      border-radius: 5px;
+      padding: 3px 7px;
+      background: var(--bg-muted);
+      color: var(--text-muted);
+      font-size: 0.74rem;
+      font-family: var(--mono);
+    }
+
+    .event-main {
+      min-width: 0;
+    }
+
+    .event-name {
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      font-weight: 600;
+    }
+
+    .event-summary {
+      margin-top: 2px;
+      color: var(--text-muted);
+      font-size: 0.82rem;
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+
+    .event-time {
+      color: var(--text-dim);
+      font-family: var(--mono);
+      font-size: 0.76rem;
+      white-space: nowrap;
+    }
+
+    .detail {
+      min-height: 0;
+      overflow: auto;
+      border-left: 1px solid var(--border);
+      background: var(--bg-soft);
+    }
+
+    .detail-head {
+      position: sticky;
+      top: 0;
+      z-index: 3;
+      padding: 14px;
+      background: rgba(25, 28, 36, 0.96);
+      border-bottom: 1px solid var(--border);
+    }
+
+    .detail h4 {
+      margin: 0 0 6px;
+      font-size: 1rem;
+      letter-spacing: 0;
+    }
+
+    .detail-meta {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 6px;
+    }
+
+    .detail-body {
+      padding: 14px;
+    }
+
+    .section {
+      margin-bottom: 16px;
+    }
+
+    .section-title {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      margin-bottom: 8px;
+      color: var(--text-muted);
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.04em;
+    }
+
+    .kv {
+      display: grid;
+      grid-template-columns: 120px minmax(0, 1fr);
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      overflow: hidden;
+      font-size: 0.86rem;
+    }
+
+    .kv div {
+      padding: 8px 9px;
+      border-bottom: 1px solid var(--border);
+    }
+
+    .kv div:nth-child(odd) {
+      color: var(--text-muted);
+      background: var(--bg-elevated);
+    }
+
+    .kv div:nth-last-child(-n+2) {
+      border-bottom: 0;
+    }
+
+    pre {
+      margin: 0;
+      padding: 12px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: #0f1117;
+      color: #e9edf7;
+      font-family: var(--mono);
+      font-size: 0.78rem;
+      white-space: pre-wrap;
+      overflow: auto;
+      max-height: 230px;
+    }
+
+    .drawer-row {
+      display: flex;
+      gap: 8px;
+      flex-wrap: wrap;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      background: #151821;
+    }
+
+    .drawer-row .pill {
+      cursor: default;
+    }
+
+    .inline-card {
+      margin: 8px 14px 12px 112px;
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      background: var(--bg-soft);
+      overflow: hidden;
+    }
+
+    .inline-card-head {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      padding: 10px 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elevated);
+    }
+
+    .inline-card-body {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+      padding: 12px;
+    }
+
+    .workflow-grid {
+      display: grid;
+      grid-template-columns: repeat(2, minmax(0, 1fr));
+      gap: 12px;
+      padding: 12px;
+    }
+
+    .workflow-card {
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--bg-soft);
+      overflow: hidden;
+    }
+
+    .workflow-card.active {
+      border-color: rgba(91, 140, 255, 0.72);
+      box-shadow: inset 0 3px 0 var(--accent);
+    }
+
+    .workflow-card.fail {
+      border-color: rgba(255, 121, 121, 0.52);
+    }
+
+    .workflow-card h4 {
+      margin: 0;
+      padding: 12px;
+      border-bottom: 1px solid var(--border);
+      background: var(--bg-elevated);
+      font-size: 0.95rem;
+    }
+
+    .phase {
+      display: grid;
+      grid-template-columns: 70px minmax(0, 1fr);
+      gap: 10px;
+      padding: 9px 12px;
+      border-bottom: 1px solid rgba(52, 57, 72, 0.62);
+      font-size: 0.84rem;
+    }
+
+    .phase:last-child { border-bottom: 0; }
+
+    .phase-label {
+      color: var(--text-muted);
+      font-family: var(--mono);
+      font-size: 0.76rem;
+    }
+
+    .rail {
+      background: var(--bg-elevated);
+      border-right: 1px solid var(--border);
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 8px;
+    }
+
+    .rail-btn {
+      width: 42px;
+      height: 42px;
+      border: 1px solid var(--border);
+      border-radius: 7px;
+      background: var(--bg-muted);
+      color: var(--text-muted);
+      display: grid;
+      place-items: center;
+      font-weight: 650;
+    }
+
+    .rail-btn.active {
+      color: white;
+      background: var(--accent);
+      border-color: var(--accent);
+    }
+
+    .split-top {
+      height: 58%;
+      min-height: 0;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) 380px;
+    }
+
+    .split-bottom {
+      height: 42%;
+      min-height: 0;
+      border-top: 1px solid var(--border);
+      background: var(--bg-soft);
+      overflow: auto;
+    }
+
+    .context-band {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 10px;
+      padding: 12px;
+    }
+
+    .context-tile {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 10px;
+      background: var(--bg-elevated);
+      min-height: 96px;
+    }
+
+    .context-tile strong {
+      display: block;
+      margin-bottom: 8px;
+      font-size: 0.84rem;
+    }
+
+    .context-tile p {
+      margin: 0;
+      color: var(--text-muted);
+      font-size: 0.82rem;
+    }
+
+    @media (max-width: 1100px) {
+      .frame { height: auto; min-height: 0; }
+      .layout-a, .layout-b, .layout-c, .layout-d, .split-top {
+        display: block;
+        height: auto;
+      }
+      .side, .timeline, .detail, .split-bottom {
+        max-height: none;
+        overflow: visible;
+      }
+      .detail { border-left: 0; border-top: 1px solid var(--border); }
+      .workflow-grid, .context-band, .inline-card-body {
+        grid-template-columns: 1fr;
+      }
+      .rail { flex-direction: row; border-right: 0; border-bottom: 1px solid var(--border); }
+    }
+  </style>
+</head>
+<body>
+  <div class="page">
+    <header class="app-header">
+      <div class="title-row">
+        <h1>Mindcraft</h1>
+        <span class="status">MindServer online</span>
+      </div>
+      <nav class="tabs" aria-label="Main views">
+        <button class="main-tab">Agents</button>
+        <button class="main-tab active">Inspect</button>
+      </nav>
+    </header>
+
+    <section class="intro">
+      <h2>Inspect View Layout Mockups</h2>
+      <p>Four directions for replacing the current filter-heavy transcript page. Each mockup uses the same fake session and event data so the tradeoffs are easy to compare.</p>
+    </section>
+
+    <nav class="mockup-nav" aria-label="Mockup shortcuts">
+      <a href="#trace-reader">A. Trace Reader</a>
+      <a href="#inline-details">B. Inline Details</a>
+      <a href="#workflow-cards">C. Workflow Cards</a>
+      <a href="#triage-console">D. Triage Console</a>
+    </nav>
+
+    <section class="mockup" id="trace-reader">
+      <div class="mockup-head">
+        <div class="mockup-title">
+          <h3>A. Trace Reader</h3>
+          <p>Best default: compact toolbar, sessions as a quiet rail, grouped turn timeline, and one adaptive sticky detail panel.</p>
+        </div>
+        <div class="score">
+          <span>Best for daily debugging</span>
+          <span>Low learning curve</span>
+          <span>Preserves context</span>
+        </div>
+      </div>
+      <div class="frame">
+        <div class="toolbar">
+          <select class="select"><option>gpt</option></select>
+          <select class="select"><option>2026-05-14T00-48-11</option></select>
+          <select class="select"><option>Story</option><option>Errors</option><option>LLM</option></select>
+          <input class="input grow" value="Search events, commands, payload..." aria-label="Search" />
+          <button class="btn">Advanced</button>
+          <button class="icon-btn" title="Live tail">●</button>
+          <button class="icon-btn" title="Export">⇩</button>
+        </div>
+        <div class="layout-a">
+          <aside class="side">
+            <div class="side-head">Sessions</div>
+            <button class="session">
+              <div class="session-name">01-07-07Z_3508</div>
+              <div class="session-meta"><span class="pill good">0 errors</span><span>9s</span></div>
+            </button>
+            <button class="session">
+              <div class="session-name">01-04-30Z_41832</div>
+              <div class="session-meta"><span class="pill good">0 errors</span><span>7s</span></div>
+            </button>
+            <button class="session active">
+              <div class="session-name">00-48-11Z_25620</div>
+              <div class="session-meta"><span class="pill error">2 errors</span><span>344s</span></div>
+            </button>
+            <button class="session">
+              <div class="session-name">00-47-03Z_32452</div>
+              <div class="session-meta"><span class="pill good">0 errors</span><span>10s</span></div>
+            </button>
+          </aside>
+
+          <main class="timeline">
+            <div class="timeline-head">
+              <strong>Session timeline</strong>
+              <span class="pill">83 events</span>
+              <span class="pill error">2 failures</span>
+              <span class="grow"></span>
+              <button class="btn">Jump to failure</button>
+            </div>
+            <div class="turn">
+              <div class="turn-title"><span class="pill">Startup</span><span>World and memory initialization</span></div>
+              <div class="event">
+                <span class="lane">system</span>
+                <div class="event-main">
+                  <div class="event-name">agent.start</div>
+                  <div class="event-summary">Process launched with profile gpt</div>
+                </div>
+                <span class="event-time">00:48:11.596</span>
+              </div>
+              <div class="event selected">
+                <span class="lane">memory</span>
+                <div class="event-main">
+                  <div class="event-name">world_identity.resolve.success</div>
+                  <div class="event-summary">Resolved world id with high confidence</div>
+                </div>
+                <span class="event-time">00:48:15.373</span>
+              </div>
+              <div class="event">
+                <span class="lane">memory</span>
+                <div class="event-main">
+                  <div class="event-name">journeymap.startup_sync.skipped</div>
+                  <div class="event-summary">Bridge unavailable; continuing without map sync</div>
+                </div>
+                <span class="event-time">00:48:15.375</span>
+              </div>
+            </div>
+            <div class="turn">
+              <div class="turn-title"><span class="pill">Turn 1</span><span>Human asks the bot to collect iron</span></div>
+              <div class="event">
+                <span class="lane">inbound</span>
+                <div class="event-main">
+                  <div class="event-name">message.prompt.input</div>
+                  <div class="event-summary">"go get iron and come back"</div>
+                </div>
+                <span class="event-time">00:48:15.377</span>
+              </div>
+              <div class="event">
+                <span class="lane">model</span>
+                <div class="event-main">
+                  <div class="event-name">model.response</div>
+                  <div class="event-summary">Chooses !mineBlock("iron_ore", 8)</div>
+                </div>
+                <span class="event-time">00:48:21.902</span>
+              </div>
+              <div class="event fail">
+                <span class="lane">action</span>
+                <div class="event-main">
+                  <div class="event-name">action.failure</div>
+                  <div class="event-summary">Could not find reachable iron ore in search radius</div>
+                </div>
+                <span class="event-time">00:49:43.118</span>
+              </div>
+            </div>
+          </main>
+
+          <aside class="detail">
+            <div class="detail-head">
+              <h4>world_identity.resolve.success</h4>
+              <div class="detail-meta">
+                <span class="pill">memory</span>
+                <span class="pill">line 5</span>
+                <span class="pill">00:48:15.373</span>
+              </div>
+            </div>
+            <div class="detail-body">
+              <div class="section">
+                <div class="section-title">Summary</div>
+                <p style="margin:0;color:var(--text-muted)">World identity resolved from settings with high confidence. This event is informational and does not require action.</p>
+              </div>
+              <div class="section">
+                <div class="section-title">Key fields <button class="btn">Copy</button></div>
+                <div class="kv">
+                  <div>world_id</div><div><code>local_forge_1_21_11_overworld</code></div>
+                  <div>confidence</div><div>high</div>
+                  <div>source</div><div>settings.world_id</div>
+                </div>
+              </div>
+              <div class="section">
+                <div class="section-title">Raw payload <button class="btn">Open JSON</button></div>
+                <pre>{
+  "event": "world_identity.resolve.success",
+  "stage": "memory",
+  "data": {
+    "world_id": "local_forge_1_21_11_overworld",
+    "confidence": "high"
+  }
+}</pre>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section class="mockup" id="inline-details">
+      <div class="mockup-head">
+        <div class="mockup-title">
+          <h3>B. Inline Details</h3>
+          <p>Details expand directly under the selected row, so the clicked event and its payload stay physically connected while scrolling.</p>
+        </div>
+        <div class="score">
+          <span>Most scroll-friendly</span>
+          <span>No right tabs</span>
+          <span>Great on narrow screens</span>
+        </div>
+      </div>
+      <div class="frame">
+        <div class="toolbar">
+          <select class="select"><option>gpt</option></select>
+          <select class="select"><option>00-48-11Z_25620</option></select>
+          <select class="select"><option>Story</option></select>
+          <input class="input grow" value="Search current session..." />
+          <button class="btn">Filters</button>
+          <button class="btn primary">Failure context</button>
+        </div>
+        <div class="layout-b">
+          <aside class="side">
+            <div class="side-head">Run summary</div>
+            <div style="padding:12px;border-bottom:1px solid var(--border)">
+              <div class="detail-meta">
+                <span class="pill">344s</span>
+                <span class="pill">83 events</span>
+                <span class="pill error">2 failures</span>
+              </div>
+            </div>
+            <button class="session active">
+              <div class="session-name">Failure: action.failure</div>
+              <div class="session-meta">Could not find reachable iron ore</div>
+            </button>
+            <button class="session">
+              <div class="session-name">Model decision</div>
+              <div class="session-meta">!mineBlock("iron_ore", 8)</div>
+            </button>
+            <button class="session">
+              <div class="session-name">World identity</div>
+              <div class="session-meta">local_forge_1_21_11_overworld</div>
+            </button>
+          </aside>
+          <main class="timeline">
+            <div class="timeline-head">
+              <strong>Turn 1 context</strong>
+              <span class="pill">+/- 30 seconds</span>
+              <span class="grow"></span>
+              <button class="btn">Collapse all</button>
+            </div>
+            <div class="event">
+              <span class="lane">inbound</span>
+              <div class="event-main"><div class="event-name">message.prompt.input</div><div class="event-summary">"go get iron and come back"</div></div>
+              <span class="event-time">00:48:15.377</span>
+            </div>
+            <div class="event">
+              <span class="lane">prompt</span>
+              <div class="event-main"><div class="event-name">prompt.assemble.end</div><div class="event-summary">Prompt assembled with 18 history turns and 4 memories</div></div>
+              <span class="event-time">00:48:16.090</span>
+            </div>
+            <div class="event selected">
+              <span class="lane">model</span>
+              <div class="event-main"><div class="event-name">model.response</div><div class="event-summary">Chooses !mineBlock("iron_ore", 8)</div></div>
+              <span class="event-time">00:48:21.902</span>
+            </div>
+            <div class="inline-card">
+              <div class="inline-card-head">
+                <strong>model.response</strong>
+                <div class="detail-meta"><span class="pill">LLM payload</span><span class="pill">line 19</span></div>
+              </div>
+              <div class="inline-card-body">
+                <div>
+                  <div class="section-title">Readable response</div>
+                  <pre>I will mine iron ore, collect enough for tools, then return.
+
+!mineBlock("iron_ore", 8)</pre>
+                </div>
+                <div>
+                  <div class="section-title">Raw fields</div>
+                  <div class="kv">
+                    <div>model</div><div>gpt-5.4</div>
+                    <div>tokens</div><div>1824 in / 74 out</div>
+                    <div>trace</div><div>c1d359c8...</div>
+                  </div>
+                </div>
+              </div>
+            </div>
+            <div class="event">
+              <span class="lane">command</span>
+              <div class="event-main"><div class="event-name">command.parsed</div><div class="event-summary">Parsed mineBlock with ore=iron_ore count=8</div></div>
+              <span class="event-time">00:48:22.011</span>
+            </div>
+            <div class="event fail">
+              <span class="lane">action</span>
+              <div class="event-main"><div class="event-name">action.failure</div><div class="event-summary">No reachable target found after pathfinder timeout</div></div>
+              <span class="event-time">00:49:43.118</span>
+            </div>
+          </main>
+        </div>
+      </div>
+    </section>
+
+    <section class="mockup" id="workflow-cards">
+      <div class="mockup-head">
+        <div class="mockup-title">
+          <h3>C. Workflow Cards</h3>
+          <p>Turns become readable cards with phases. This optimizes for understanding agent behavior, not raw event-by-event inspection.</p>
+        </div>
+        <div class="score">
+          <span>Most narrative</span>
+          <span>Best for demos</span>
+          <span>Less raw density</span>
+        </div>
+      </div>
+      <div class="frame">
+        <div class="toolbar">
+          <select class="select"><option>gpt</option></select>
+          <select class="select"><option>00-48-11Z_25620</option></select>
+          <select class="select"><option>Workflows</option></select>
+          <input class="input grow" value="Find command, memory, or failure..." />
+          <button class="btn">Raw timeline</button>
+          <button class="btn">Filters</button>
+        </div>
+        <div class="layout-c">
+          <aside class="side">
+            <div class="side-head">Session outline</div>
+            <button class="session active">
+              <div class="session-name">Startup</div>
+              <div class="session-meta"><span class="pill good">ok</span> 7 events</div>
+            </button>
+            <button class="session active">
+              <div class="session-name">Turn 1 - collect iron</div>
+              <div class="session-meta"><span class="pill error">failed</span> 31 events</div>
+            </button>
+            <button class="session">
+              <div class="session-name">Turn 2 - recover</div>
+              <div class="session-meta"><span class="pill">running</span> 14 events</div>
+            </button>
+          </aside>
+          <main class="timeline">
+            <div class="timeline-head">
+              <strong>Workflow board</strong>
+              <span class="pill">Grouped by turn</span>
+              <span class="grow"></span>
+              <button class="btn">Expand raw events</button>
+            </div>
+            <div class="workflow-grid">
+              <article class="workflow-card">
+                <h4>Startup</h4>
+                <div class="phase"><span class="phase-label">system</span><span>Agent process started</span></div>
+                <div class="phase"><span class="phase-label">memory</span><span>World identity resolved</span></div>
+                <div class="phase"><span class="phase-label">memory</span><span>World memory loaded</span></div>
+              </article>
+              <article class="workflow-card active fail">
+                <h4>Turn 1 - collect iron</h4>
+                <div class="phase"><span class="phase-label">input</span><span>"go get iron and come back"</span></div>
+                <div class="phase"><span class="phase-label">prompt</span><span>Prompt assembled with nearby state and objectives</span></div>
+                <div class="phase"><span class="phase-label">model</span><span>Selected <code>!mineBlock("iron_ore", 8)</code></span></div>
+                <div class="phase"><span class="phase-label">action</span><span style="color:var(--danger)">Failed: no reachable ore found</span></div>
+              </article>
+              <article class="workflow-card">
+                <h4>Turn 2 - recover</h4>
+                <div class="phase"><span class="phase-label">system</span><span>Action result fed back to model</span></div>
+                <div class="phase"><span class="phase-label">model</span><span>Plans surface search near ravine</span></div>
+                <div class="phase"><span class="phase-label">command</span><span>Movement command started</span></div>
+              </article>
+            </div>
+          </main>
+          <aside class="detail">
+            <div class="detail-head">
+              <h4>Turn 1 - collect iron</h4>
+              <div class="detail-meta"><span class="pill error">failed</span><span class="pill">31 events</span><span class="pill">82s</span></div>
+            </div>
+            <div class="detail-body">
+              <div class="section">
+                <div class="section-title">Diagnosis</div>
+                <p style="margin:0;color:var(--text-muted)">The model chose a reasonable mining command, but pathfinding failed before finding a reachable target. The next turn should receive clearer failure context.</p>
+              </div>
+              <div class="section">
+                <div class="section-title">Causality</div>
+                <div class="kv">
+                  <div>User intent</div><div>Collect iron</div>
+                  <div>Model choice</div><div>mineBlock iron_ore x8</div>
+                  <div>Failure source</div><div>pathfinder / action_manager</div>
+                  <div>Next step</div><div>Inspect movement context</div>
+                </div>
+              </div>
+              <div class="section">
+                <div class="section-title">Actions</div>
+                <div style="display:flex;gap:8px;flex-wrap:wrap">
+                  <button class="btn primary">Open raw events</button>
+                  <button class="btn">Show +/- 30s</button>
+                  <button class="btn">Copy report</button>
+                </div>
+              </div>
+            </div>
+          </aside>
+        </div>
+      </div>
+    </section>
+
+    <section class="mockup" id="triage-console">
+      <div class="mockup-head">
+        <div class="mockup-title">
+          <h3>D. Triage Console</h3>
+          <p>A power-user failure mode: compact navigation rail, failure queue, selected event details, and a bottom context band for prompt/model/command/action snapshots.</p>
+        </div>
+        <div class="score">
+          <span>Best for failures</span>
+          <span>Highest density</span>
+          <span>More expert-oriented</span>
+        </div>
+      </div>
+      <div class="frame">
+        <div class="toolbar compact">
+          <select class="select"><option>gpt</option></select>
+          <select class="select"><option>Errors</option></select>
+          <input class="input grow" value="failure OR timeout OR kicked" />
+          <button class="btn primary">Run query</button>
+          <button class="btn">Advanced</button>
+          <button class="icon-btn" title="Export">⇩</button>
+        </div>
+        <div class="layout-d">
+          <nav class="rail" aria-label="Inspect modes">
+            <button class="rail-btn active">!</button>
+            <button class="rail-btn">T</button>
+            <button class="rail-btn">L</button>
+            <button class="rail-btn">C</button>
+            <button class="rail-btn">M</button>
+          </nav>
+          <main style="min-height:0;display:flex;flex-direction:column">
+            <div class="split-top">
+              <section class="timeline">
+                <div class="timeline-head">
+                  <strong>Failure queue</strong>
+                  <span class="pill error">2 unresolved</span>
+                  <span class="grow"></span>
+                  <button class="btn">Next</button>
+                </div>
+                <div class="event selected fail">
+                  <span class="lane">action</span>
+                  <div class="event-main">
+                    <div class="event-name">action.failure</div>
+                    <div class="event-summary">Could not find reachable iron ore in search radius</div>
+                  </div>
+                  <span class="event-time">00:49:43.118</span>
+                </div>
+                <div class="event fail">
+                  <span class="lane">model</span>
+                  <div class="event-main">
+                    <div class="event-name">model.error</div>
+                    <div class="event-summary">Provider timeout during memory summarization</div>
+                  </div>
+                  <span class="event-time">00:50:12.009</span>
+                </div>
+                <div class="drawer-row">
+                  <span class="pill">Trace c1d359c8...</span>
+                  <span class="pill">Turn 1</span>
+                  <span class="pill">+/- 30s loaded</span>
+                  <span class="pill">31 related events</span>
+                </div>
+                <div class="event">
+                  <span class="lane">model</span>
+                  <div class="event-main">
+                    <div class="event-name">model.response</div>
+                    <div class="event-summary">The model chose a mining command before pathfinding failed</div>
+                  </div>
+                  <span class="event-time">00:48:21.902</span>
+                </div>
+                <div class="event">
+                  <span class="lane">command</span>
+                  <div class="event-main">
+                    <div class="event-name">command.start</div>
+                    <div class="event-summary">mineBlock iron_ore count=8</div>
+                  </div>
+                  <span class="event-time">00:48:22.011</span>
+                </div>
+              </section>
+              <aside class="detail" style="border-left:1px solid var(--border)">
+                <div class="detail-head">
+                  <h4>action.failure</h4>
+                  <div class="detail-meta"><span class="pill error">failure</span><span class="pill">Turn 1</span><span class="pill">line 44</span></div>
+                </div>
+                <div class="detail-body">
+                  <div class="section">
+                    <div class="section-title">Most likely cause</div>
+                    <p style="margin:0;color:var(--text-muted)">Pathfinder could not produce a valid route to any target candidate before the action timed out.</p>
+                  </div>
+                  <div class="section">
+                    <div class="section-title">Failure payload</div>
+                    <pre>{
+  "message": "No reachable iron_ore found",
+  "radius": 64,
+  "candidates": 0,
+  "last_position": {"x": 24, "y": 62, "z": -118}
+}</pre>
+                  </div>
+                  <div class="section">
+                    <div class="section-title">Jump targets</div>
+                    <div style="display:flex;gap:8px;flex-wrap:wrap">
+                      <button class="btn">Model response</button>
+                      <button class="btn">Command start</button>
+                      <button class="btn">Stack/source</button>
+                    </div>
+                  </div>
+                </div>
+              </aside>
+            </div>
+            <section class="split-bottom">
+              <div class="context-band">
+                <div class="context-tile"><strong>Input</strong><p>"go get iron and come back"</p></div>
+                <div class="context-tile"><strong>Model</strong><p>Chose <code>!mineBlock("iron_ore", 8)</code></p></div>
+                <div class="context-tile"><strong>Command</strong><p>Started mining action with radius 64</p></div>
+                <div class="context-tile"><strong>Result</strong><p style="color:var(--danger)">Failed: no reachable target</p></div>
+              </div>
+            </section>
+          </main>
+          <aside class="side" style="border-right:0;border-left:1px solid var(--border)">
+            <div class="side-head">Sessions with failures</div>
+            <button class="session active">
+              <div class="session-name">00-48-11Z_25620</div>
+              <div class="session-meta"><span class="pill error">2 errors</span><span>344s</span></div>
+            </button>
+            <button class="session">
+              <div class="session-name">02-00-49Z_25196</div>
+              <div class="session-meta"><span class="pill error">2 errors</span><span>1254s</span></div>
+            </button>
+            <button class="session">
+              <div class="session-name">Yesterday: movement</div>
+              <div class="session-meta"><span class="pill error">5 errors</span><span>pathfinder</span></div>
+            </button>
+          </aside>
+        </div>
+      </div>
+    </section>
+  </div>
+</body>
+</html>

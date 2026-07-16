@@ -17,6 +17,12 @@
 > [!Caution]
 Do not connect this bot to public servers with coding enabled. This project allows an LLM to write/execute code on your computer. The code is sandboxed, but still vulnerable to injection attacks. Code writing is disabled by default, you can enable it by setting `allow_insecure_coding` to `true` in `settings.js`. Ye be warned.
 
+Generated `!newAction` code is intentionally restricted further than normal
+JavaScript. Loop syntax (`for`, `while`, and `do/while`) is rejected before code
+is staged because synchronous loops can hang the bot's Node process. This is a
+guardrail, not a security boundary; use Docker or another OS-level sandbox if
+you enable `allow_insecure_coding`.
+
 # Getting Started
 ## Requirements
 
@@ -42,6 +48,15 @@ Do not connect this bot to public servers with coding enabled. This project allo
 5. Start a minecraft world and open it to LAN on localhost port `55916`
 
 6. Run `node main.js` from the installed directory
+
+### MindServer web UI
+
+The dashboard served with MindServer (default [http://localhost:8080](http://localhost:8080)) is built from [`mindserver-ui/`](mindserver-ui/) with Vite. After `npm install`, run `npm run build:ui` so `src/mindcraft/public/` contains a fresh `index.html` and `ui-assets/`. For development, run MindServer as usual and in another terminal use `npm run dev:ui` (Vite on port 5173 with API proxy to 8080).
+
+MindServer validates agent settings against `src/mindcraft/public/settings_spec.json`
+before creating or restarting agents. Invalid types, unknown option values, and
+updates for disconnected agents are rejected with an error event instead of being
+applied to a running process.
 
 If you encounter issues, check the [FAQ](https://github.com/mindcraft-bots/mindcraft/blob/main/FAQ.md) or find support on [discord](https://discord.gg/mp73p35dzC). We are currently not very responsive to github issues. To run tasks please refer to [Minecollab Instructions](minecollab.md#installation)
 
@@ -203,13 +218,13 @@ The `model` field can be a string or an object. A model object must specify an `
 
 `model` is used for chat, `code_model` is used for newAction coding, `vision_model` is used for image interpretation, `embedding` is used to embed text for example selection, and `speak_model` is used for voice synthesis. `model` will be used by default for all other models if not specified. Not all APIs support embeddings, vision, or voice synthesis.
 
-All apis have default models and urls, so those fields are optional. The `params` field is optional and can be used to specify additional parameters for the model. It accepts any key-value pairs supported by the api. Is not supported for embedding models.
+All apis have default models and urls, so those fields are optional. The `params` field is optional and can be used to specify additional parameters for the model. It accepts any key-value pairs supported by the api. Is not supported for embedding models. OpenRouter chat profiles pass `params` through to the completion request.
 
 ## Embedding Models
 
 Embedding models are used to embed and efficiently select relevant examples for conversation and coding.
 
-Supported Embedding APIs: `openai`, `google`, `replicate`, `huggingface`, `novita`
+Supported Embedding APIs: `openai`, `google`, `ollama`, `replicate`, `huggingface`, `novita`
 
 If you try to use an unsupported model, then it will default to a simple word-overlap method. Expect reduced performance. We recommend using supported embedding APIs.
 

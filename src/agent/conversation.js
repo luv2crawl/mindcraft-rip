@@ -16,17 +16,24 @@ class Conversation {
         this.inMessageTimer = null;
     }
 
+    clearInMessageTimer() {
+        if (this.inMessageTimer) {
+            clearTimeout(this.inMessageTimer);
+            this.inMessageTimer = null;
+        }
+    }
+
     reset() {
         this.active = false;
         this.ignore_until_start = false;
         this.in_queue = [];
-        this.inMessageTimer = null;
+        this.clearInMessageTimer();
     }
 
     end() {
         this.active = false;
         this.ignore_until_start = true;
-        this.inMessageTimer = null;
+        this.clearInMessageTimer();
         const full_message = _compileInMessages(this);
         if (full_message.message.trim().length > 0)
             agent.history.add(this.name, full_message.message);
@@ -78,7 +85,7 @@ class ConversationManager {
             if (this.awaiting_response && agent.isIdle()) {
                 wait_time += delta;
                 if (wait_time > this.wait_time_limit) {
-                    agent.handleMessage('system', `${convo_partner} hasn't responded in ${this.wait_time_limit/1000} seconds, respond with a message to them or your own action.`);
+                    _queueAgentMessage('system', `${convo_partner} hasn't responded in ${this.wait_time_limit/1000} seconds, respond with a message to them or your own action.`);
                     wait_time = 0;
                     this.wait_time_limit*=2;
                 }
@@ -96,7 +103,7 @@ class ConversationManager {
                     }
                     if (!agent.self_prompter.isPaused()) {
                         this.endConversation(convo_partner);
-                        agent.handleMessage('system', `${convo_partner} disconnected, conversation has ended.`);
+                        _queueAgentMessage('system', `${convo_partner} disconnected, conversation has ended.`);
                     }
                     else {
                         this.endConversation(convo_partner);
@@ -227,7 +234,7 @@ class ConversationManager {
     endConversation(sender) {
         if (this.convos[sender]) {
             this.convos[sender].end();
-            if (this.activeConversation.name === sender) {
+            if (this.activeConversation?.name === sender) {
                 this._stopMonitor();
                 this.activeConversation = null;
                 if (agent.self_prompter.isPaused() && !this.inConversation()) {
@@ -308,6 +315,7 @@ async function _scheduleProcessInMessage(sender, received, convo) {
 
 function _processInMessageQueue(name) {
     const convo = convoManager._getConvo(name);
+    convo.inMessageTimer = null;
     _handleFullInMessage(name, _compileInMessages(convo));
 }
 
@@ -337,7 +345,7 @@ function _handleFullInMessage(sender, received) {
     else if (received.start)
         agent.shut_up = false;
     convo.inMessageTimer = null;
-    agent.handleMessage(sender, message);
+    _queueAgentMessage(sender, message);
 }
 
 
@@ -350,4 +358,14 @@ async function _resumeSelfPrompter() {
     if (agent.self_prompter.isPaused() && !convoManager.inConversation()) {
         agent.self_prompter.start();
     }
+}
+
+function _queueAgentMessage(sender, message) {
+    if (typeof agent._queueHandleMessage === 'function') {
+        agent._queueHandleMessage(sender, message);
+        return;
+    }
+    void agent.handleMessage(sender, message).catch(error => {
+        console.error('Conversation queued message failed:', error?.message || error);
+    });
 }

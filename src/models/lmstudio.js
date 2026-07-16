@@ -1,5 +1,6 @@
 import OpenAIApi from 'openai';
 import { strictFormat } from '../utils/text.js';
+import { notifyContextTruncateRetry, notifyModelResponseFallback } from './_model_transcript_helpers.js';
 
 export class LMStudio {
     static prefix = 'lmstudio';
@@ -37,9 +38,11 @@ export class LMStudio {
         } catch (err) {
             if ((err.message === 'Context length exceeded' || err.code === 'context_length_exceeded') && turns.length > 1) {
                 console.log('Context length exceeded, trying again with shorter context.');
+                notifyContextTruncateRetry(this, turns.length - 1);
                 return await this.sendRequest(turns.slice(1), systemMessage, stop_seq);
             } else {
                 console.log(err);
+                notifyModelResponseFallback(this, err);
                 res = 'My brain disconnected, try again.';
             }
         }

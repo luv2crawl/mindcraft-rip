@@ -35,7 +35,17 @@ class MindServerProxy {
         this.connected = true;
         console.log(name, 'connected to MindServer');
 
-        this.socket.on('disconnect', () => {
+        this.socket.on('disconnect', (reason) => {
+            try {
+                this.agent?.transcript?.record(
+                    'mindserver.socket.disconnect',
+                    { reason: String(reason) },
+                    'mindserver_proxy',
+                    { stage: 'connection' }
+                );
+            } catch {
+                /* never block teardown */
+            }
             console.log('Disconnected from MindServer');
             this.connected = false;
             if (this.agent) {

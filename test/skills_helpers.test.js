@@ -22,8 +22,12 @@ import {
     selectMiningEntry,
 } from '../src/agent/library/skills.js';
 import { objectiveResult, formatObjectiveResult } from '../src/agent/objectives/objective_results.js';
-import settings from '../settings.js';
+import settings, { setSettings } from '../src/agent/settings.js';
+import rootSettings from '../settings.js';
 import { MemoryBank } from '../src/agent/memory_bank.js';
+import { getCommand } from '../src/agent/commands/index.js';
+
+setSettings({ ...rootSettings });
 
 describe('_directionToVec', () => {
     test('cardinal directions map to expected unit vectors', () => {
@@ -79,6 +83,28 @@ describe('_computePathfindTimeout', () => {
         // Distance 0 plus base — defensive sanity that the base floor holds
         const base = settings.pathfind_timeout_base_ms;
         assert.ok(_computePathfindTimeout(fakeBotAt(0, 0, 0), { x: 0, y: 0, z: 0 }) >= base);
+    });
+    test('uses live agent settings updates', () => {
+        const original = { ...settings };
+        try {
+            setSettings({
+                ...original,
+                pathfind_timeout_base_ms: 2000,
+                pathfind_timeout_per_block_ms: 10,
+                pathfind_timeout_max_ms: 2500,
+            });
+
+            assert.equal(
+                _computePathfindTimeout(fakeBotAt(0, 0, 0), { x: 20, y: 0, z: 0 }),
+                2200
+            );
+            assert.equal(
+                _computePathfindTimeout(fakeBotAt(0, 0, 0), { x: 100, y: 0, z: 0 }),
+                2500
+            );
+        } finally {
+            setSettings(original);
+        }
     });
 });
 
@@ -349,6 +375,18 @@ describe('mining supply helpers', () => {
             dimension: null,
             source: 'journeymap:home_chest',
         });
+
+        const upperWaypointMemory = new MemoryBank();
+        upperWaypointMemory.remember('journeymap.waypoints', 'HOME_CHEST', { name: 'HOME_CHEST', x: -411, y: 65, z: 63 });
+
+        assert.deepEqual(getMiningHomeChestPosition(bot, upperWaypointMemory), {
+            name: 'HOME_CHEST',
+            x: -411,
+            y: 65,
+            z: 63,
+            dimension: null,
+            source: 'journeymap:home_chest',
+        });
     });
 
     test('storage lookup accepts chest-like containers and remembers the last one', () => {
@@ -376,6 +414,31 @@ describe('mining supply helpers', () => {
             z: 0,
             name: 'barrel',
         });
+    });
+
+    test('setHomeChest indexes nearest storage without blockAt position type errors', async () => {
+        const chestPos = new Vec3(-410, 65, 63);
+        const blockAtCalls = [];
+        const memoryBank = new MemoryBank();
+        const bot = {
+            entity: { position: new Vec3(-412, 65, 63) },
+            game: { dimension: 'overworld' },
+            findBlocks({ matching }) {
+                return matching({ name: 'chest', position: chestPos }) ? [chestPos] : [];
+            },
+            blockAt(pos) {
+                blockAtCalls.push(pos);
+                if (pos.equals(chestPos)) return { name: 'chest', position: chestPos, getProperties: () => ({}) };
+                return { name: 'air', position: pos, getProperties: () => ({}) };
+            },
+        };
+
+        const out = await getCommand('!setHomeChest').perform({ bot, memory_bank: memoryBank });
+
+        assert.match(out, /Home chest saved at \(-410, 65, 63\)/);
+        assert.equal(memoryBank.recallPlace('home_chest')[0], -410);
+        assert.equal(memoryBank.recall('storage', 'home_chest').block, 'chest');
+        assert.ok(blockAtCalls.every(pos => typeof pos.floored === 'function'));
     });
 
     test('home chest lookup falls back to last known storage position when scanning misses', () => {

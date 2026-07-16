@@ -6,7 +6,7 @@ import { runMiningObjective } from '../objectives/mining_objective.js';
 import { objectiveResult, formatObjectiveResult } from '../objectives/objective_results.js';
 import Vec3 from 'vec3';
 import {
-    fetchBridgeWaypoints,
+    fetchJourneyMapWaypoints,
     mergeJourneyMapWaypoints,
     parseJourneyMapLocation,
     postBridgeMarker,
@@ -303,18 +303,25 @@ export const actionsList = [
     },
     {
         name: '!syncJourneyMap',
-        description: 'Import waypoints from the optional local JourneyMap bridge.',
+        description: 'Import waypoints from the optional local JourneyMap bridge or local WaypointData.dat files.',
         params: {},
         perform: async function(agent) {
             try {
-                const rawWaypoints = await fetchBridgeWaypoints();
-                const sync = mergeJourneyMapWaypoints(agent.memory_bank, rawWaypoints);
+                const fetched = await fetchJourneyMapWaypoints();
+                const sync = mergeJourneyMapWaypoints(agent.memory_bank, fetched.waypoints, { source: fetched.source });
                 const imported = sync.imported + sync.updated;
-                return okResult(`Imported ${imported} JourneyMap waypoint${imported === 1 ? '' : 's'}.`, { imported });
+                return okResult(`Imported ${imported} JourneyMap waypoint${imported === 1 ? '' : 's'}.`, {
+                    imported,
+                    source: fetched.source,
+                    sources: fetched.sources,
+                });
             } catch (err) {
-                return failResult('journeymap_bridge_unavailable', 'JourneyMap bridge is unavailable. Paste a shared JourneyMap location with !importJourneyMapLocation("[x:10, y:64, z:-20, dim:0, name:base]").', {
+                return failResult('journeymap_sync_unavailable', 'JourneyMap sync is unavailable. Configure journeymap_waypoints_path or paste a shared JourneyMap location with !importJourneyMapLocation("[x:10, y:64, z:-20, dim:0, name:base]").', {
                     recommendedCommands: ['!importJourneyMapLocation("[x:10, y:64, z:-20, dim:0, name:base]")'],
-                    data: { error: err.message },
+                    data: {
+                        error: err.message,
+                        bridgeError: err.bridgeError?.message,
+                    },
                 });
             }
         }
@@ -750,7 +757,7 @@ export const actionsList = [
                 updatedAt: now,
                 verifiedAt: now,
             });
-            const block = agent.bot.blockAt(chest);
+            const block = agent.bot.blockAt(new Vec3(chest.x, chest.y, chest.z));
             agent.memory_bank.remember('storage', 'home_chest', makeStorageRecord('home_chest', block || chest, [], {
                 dimension,
                 source: 'set_home_chest',

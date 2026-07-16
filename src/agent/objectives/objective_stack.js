@@ -9,6 +9,8 @@ export class ObjectiveStack {
     }
 
     push({ type, args = {}, state = 'START', status = 'pending', result = null, error = null }) {
+        const now = Date.now();
+        const parent = this.peek();
         const frame = {
             id: nextObjectiveId++,
             type,
@@ -17,11 +19,13 @@ export class ObjectiveStack {
             status,
             result,
             error,
-            createdAt: Date.now(),
-            updatedAt: Date.now(),
+            parentId: parent?.id ?? null,
+            stateEnteredAt: now,
+            createdAt: now,
+            updatedAt: now,
         };
         this.frames.push(frame);
-        this.agent?.transcript?.record('objective.push', frame, 'objectives');
+        this.agent?.transcript?.record('objective.push', frame, 'objectives', { stage: 'objective' });
         noteObjectiveUpdate(this.agent, frame);
         return frame;
     }
@@ -31,10 +35,17 @@ export class ObjectiveStack {
         if (frame) {
             frame.result = result ?? frame.result;
             if (frame.status !== 'completed' && frame.status !== 'failed') {
-                frame.status = frame.result?.ok === false ? 'failed' : 'completed';
+                const resultText = typeof frame.result === 'string' ? frame.result.trim() : '';
+                const failed = frame.result == null ||
+                    frame.result?.ok === false ||
+                    /^FAILED:/i.test(resultText) ||
+                    /^ERR_/i.test(resultText);
+                frame.status = failed ? 'failed' : 'completed';
             }
-            frame.updatedAt = Date.now();
-            this.agent?.transcript?.record('objective.pop', frame, 'objectives');
+            const now = Date.now();
+            frame.updatedAt = now;
+            frame.totalDurationMs = now - (frame.createdAt || now);
+            this.agent?.transcript?.record('objective.pop', frame, 'objectives', { stage: 'objective' });
             noteObjectiveUpdate(this.agent, this.peek());
         }
         return frame;
@@ -47,8 +58,30 @@ export class ObjectiveStack {
     updateTop(patch) {
         const frame = this.peek();
         if (!frame) return null;
-        Object.assign(frame, patch, { updatedAt: Date.now() });
-        this.agent?.transcript?.record('objective.update', frame, 'objectives');
+        const now = Date.now();
+        const fromState = frame.state;
+        const fromStatus = frame.status;
+        const stateEnteredAt = frame.stateEnteredAt || frame.createdAt || now;
+        const stateChanged = patch && Object.prototype.hasOwnProperty.call(patch, 'state') && patch.state !== fromState;
+        const statusChanged = patch && Object.prototype.hasOwnProperty.call(patch, 'status') && patch.status !== fromStatus;
+        Object.assign(frame, patch, { updatedAt: now });
+        if (stateChanged) {
+            frame.stateEnteredAt = now;
+        }
+        const enrichedPayload = {
+            ...frame,
+            transition: {
+                fromState,
+                toState: frame.state,
+                fromStatus,
+                toStatus: frame.status,
+                stateChanged,
+                statusChanged,
+                timeInPrevStateMs: stateChanged ? now - stateEnteredAt : null,
+                reason: patch?.reason ?? null
+            }
+        };
+        this.agent?.transcript?.record('objective.update', enrichedPayload, 'objectives', { stage: 'objective' });
         noteObjectiveUpdate(this.agent, frame);
         return frame;
     }
@@ -56,7 +89,7 @@ export class ObjectiveStack {
     clear() {
         const count = this.frames.length;
         this.frames = [];
-        this.agent?.transcript?.record('objective.clear', { count }, 'objectives');
+        this.agent?.transcript?.record('objective.clear', { count }, 'objectives', { stage: 'objective' });
         noteObjectiveUpdate(this.agent, null);
         return count;
     }

@@ -67,6 +67,33 @@ describe('History memory summarization', () => {
         }
     });
 
+    test('keeps truncated memory within the documented 500 character cap', async () => {
+        const history = Object.create(History.prototype);
+        history.memory = '';
+        history.agent = {
+            transcript: {
+                record() {}
+            },
+            prompter: {
+                promptMemSaving: async () => 'x'.repeat(600)
+            }
+        };
+
+        await history.summarizeMemories([{ role: 'user', content: 'remember this' }]);
+
+        assert.equal(history.memory.length, 500);
+        assert.match(history.memory, /Memory truncated to 500 chars/);
+    });
+
+    test('filters long action output summaries from durable memory', async () => {
+        const history = Object.create(History.prototype);
+
+        assert.equal(history._isLowValueMemoryTurn({
+            role: 'system',
+            content: 'Action output:\nOutput is very long (1000 chars) and has been shortened.'
+        }), true);
+    });
+
     test('skips summarization when a chunk only contains transient action noise', async () => {
         const events = [];
         let calls = 0;

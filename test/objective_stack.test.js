@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { ObjectiveStack } from '../src/agent/objectives/objective_stack.js';
 import { objectiveResult, formatObjectiveResult } from '../src/agent/objectives/objective_results.js';
-import { runMiningObjective } from '../src/agent/objectives/mining_objective.js';
+import { buildVerifiedMiningResult, runMiningObjective } from '../src/agent/objectives/mining_objective.js';
 
 test('ObjectiveStack pushes, peeks, updates, pops, and clears frames', () => {
     const events = [];
@@ -71,6 +71,16 @@ test('ObjectiveStack.pop preserves explicit terminal status', () => {
     assert.equal(popped.status, 'failed');
 });
 
+test('ObjectiveStack.pop treats legacy failure results as failed', () => {
+    const stack = new ObjectiveStack({ transcript: { record() {} } });
+
+    stack.push({ type: 'mine_ore', status: 'running' });
+    assert.equal(stack.pop('FAILED: no_path\nCould not reach target.').status, 'failed');
+
+    stack.push({ type: 'mine_ore', status: 'running' });
+    assert.equal(stack.pop(null).status, 'failed');
+});
+
 test('runMiningObjective pops frame on plan failure', async () => {
     const stack = new ObjectiveStack({ transcript: { record() {} } });
     const agent = {
@@ -83,4 +93,47 @@ test('runMiningObjective pops frame on plan failure', async () => {
 
     assert.match(result, /FAILED: no_bot/);
     assert.equal(stack.frames.length, 0);
+});
+
+test('buildVerifiedMiningResult rejects mined counts without inventory or deposit evidence', () => {
+    const agent = {
+        bot: {
+            inventory: {
+                items() {
+                    return [];
+                },
+            },
+        },
+    };
+
+    const result = buildVerifiedMiningResult(agent, 'copper', { ok: true, mined: 4, target: 4, data: {} }, 4);
+
+    assert.equal(result.ok, false);
+    assert.equal(result.reason, 'mining_verification_failed');
+    assert.equal(result.data.verified, 0);
+    assert.deepEqual(result.recommendedCommands, ['!recoverDroppedItems', '!taskStatus']);
+});
+
+test('buildVerifiedMiningResult accepts deposited mining evidence', () => {
+    const agent = {
+        bot: {
+            inventory: {
+                items() {
+                    return [];
+                },
+            },
+        },
+    };
+
+    const result = buildVerifiedMiningResult(agent, 'copper', {
+        ok: true,
+        mined: 4,
+        target: 4,
+        data: { depositedCounts: { raw_copper: 4 } },
+    }, 4);
+
+    assert.equal(result.ok, true);
+    assert.equal(result.reason, 'done');
+    assert.equal(result.data.verified, 4);
+    assert.equal(result.data.depositedVerified, 4);
 });

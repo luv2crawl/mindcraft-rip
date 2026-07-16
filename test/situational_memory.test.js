@@ -1,12 +1,14 @@
 import { test, describe } from 'node:test';
 import assert from 'node:assert/strict';
 import { existsSync, readFileSync, rmSync } from 'fs';
+import nbt from 'prismarine-nbt';
 import { MemoryBank } from '../src/agent/memory_bank.js';
 import { History } from '../src/agent/history.js';
-import { parseJourneyMapLocation, normalizeBridgeWaypoint, mergeJourneyMapWaypoints } from '../src/agent/journeymap.js';
+import { parseJourneyMapLocation, normalizeBridgeWaypoint, mergeJourneyMapWaypoints, parseJourneyMapWaypointData } from '../src/agent/journeymap.js';
 import { aggregateContainerItems, makeStorageRecord, searchStorage } from '../src/agent/storage_memory.js';
 import { buildRouteRecord, makeRouteIssue, shouldRecordBreadcrumb } from '../src/agent/route_memory.js';
 import { getCommand } from '../src/agent/commands/index.js';
+import { recordMiningCompletion } from '../src/agent/objectives/mining_objective.js';
 
 describe('MemoryBank typed memory', () => {
     test('migrates old flat place memory into places namespace', () => {
@@ -62,6 +64,46 @@ describe('MemoryBank typed memory', () => {
 
         assert.deepEqual(Object.keys(bank.search('storage', 'beef')), ['food_barrel']);
         assert.deepEqual(Object.keys(bank.search('storage', 'stone')), ['stone_chest']);
+    });
+
+    test('rejects unsafe memory keys and skips unsafe loaded keys', () => {
+        const bank = new MemoryBank();
+
+        assert.throws(
+            () => bank.remember('places', '__proto__', { polluted: true }),
+            /Unsafe memory key/
+        );
+        assert.equal({}.polluted, undefined);
+
+        bank.loadJson(JSON.parse(`{
+            "places": {
+                "__proto__": { "polluted": true },
+                "base": { "name": "base", "x": 1, "y": 64, "z": 1 }
+            },
+            "storage": {
+                "chest": {
+                    "name": "chest",
+                    "__proto__": { "polluted": true }
+                }
+            },
+            "__proto__": { "polluted": true }
+        }`));
+
+        assert.equal({}.polluted, undefined);
+        assert.equal(bank.recall('places', '__proto__'), undefined);
+        assert.equal(bank.recall('places', 'base').x, 1);
+        assert.equal(bank.recall('storage', 'chest').polluted, undefined);
+        assert.equal(bank.recall('storage', 'chest').name, 'chest');
+    });
+
+    test('rejects unsafe memory namespaces', () => {
+        const bank = new MemoryBank();
+
+        assert.throws(
+            () => bank.remember('journeymap.__proto__', 'home', { x: 1, y: 2, z: 3 }),
+            /Unsafe memory namespace/
+        );
+        assert.equal({}.home, undefined);
     });
 
     test('savedPlaces reports places, JourneyMap waypoints, and storage labels', async () => {
@@ -181,6 +223,50 @@ describe('JourneyMap parsing', () => {
         assert.ok(waypoint.updatedAt);
         assert.ok(waypoint.verifiedAt);
     });
+
+    test('parses JourneyMap WaypointData.dat NBT files', async () => {
+        const sample = nbt.writeUncompressed({
+            type: 'compound',
+            name: '',
+            value: {
+                waypoints: {
+                    type: 'compound',
+                    value: {
+                        '7e85d601-23da-47e3-9ecd-523308718e73': {
+                            type: 'compound',
+                            value: {
+                                settings: {
+                                    type: 'compound',
+                                    value: {
+                                        enable: { type: 'byte', value: 1 },
+                                    },
+                                },
+                                pos: {
+                                    type: 'compound',
+                                    value: {
+                                        x: { type: 'int', value: -411 },
+                                        y: { type: 'int', value: 65 },
+                                        z: { type: 'int', value: 15 },
+                                        dimension: { type: 'string', value: 'minecraft:overworld' },
+                                    },
+                                },
+                                name: { type: 'string', value: 'HOME_CHEST' },
+                                guid: { type: 'string', value: '7e85d601-23da-47e3-9ecd-523308718e73' },
+                            },
+                        },
+                    },
+                },
+            },
+        });
+        const parsed = await parseJourneyMapWaypointData(sample, { sourcePath: 'WaypointData.dat' });
+
+        assert.equal(parsed.length, 1);
+        assert.equal(parsed[0].name, 'HOME_CHEST');
+        assert.equal(parsed[0].x, -411);
+        assert.equal(parsed[0].y, 65);
+        assert.equal(parsed[0].z, 15);
+        assert.equal(parsed[0].dimension, 'minecraft:overworld');
+    });
 });
 
 describe('Routes and storage helpers', () => {
@@ -242,5 +328,31 @@ describe('Routes and storage helpers', () => {
         assert.equal(record.contentsIndexedAt, record.indexedAt);
         assert.equal(record.updatedAt.length > 0, true);
         assert.equal(record.source, 'test');
+    });
+
+    test('mining completion updates home chest storage counts', () => {
+        const memory_bank = new MemoryBank();
+        memory_bank.remember('storage', 'home_chest', {
+            name: 'home_chest',
+            x: 1,
+            y: 64,
+            z: 2,
+            counts: {},
+        });
+        memory_bank.markClean();
+
+        recordMiningCompletion({ memory_bank }, 'copper', {
+            ok: true,
+            data: {
+                mined: 16,
+                target: 16,
+            },
+        });
+
+        const storage = memory_bank.recall('storage', 'home_chest');
+        assert.equal(storage.counts.raw_copper, 16);
+        assert.equal(storage.source, 'mining_objective');
+        assert.equal(Object.keys(memory_bank.list('observations')).length, 1);
+        assert.equal(memory_bank.isDirty(), true);
     });
 });
